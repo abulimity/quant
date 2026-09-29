@@ -132,21 +132,37 @@ def _op_operator_pitfall(job: dict, params: dict) -> dict:
     }
 
 
-def _op_spec2code(job: dict, params: dict) -> dict:
-    """规格 → backtrader 策略源码（P5.4）。"""
-    import spec2code
+def _op_validate_code(job: dict, params: dict) -> dict:
+    """**P5.4**：校验 backtrader 策略源码 —— 用 x2strategy 自带的 `spec2code.validate_code`。
 
-    payload = params.get("spec")
-    if not payload:
-        raise X2EntryError("spec2code 需要 params.spec（规格 JSON）")
-    for name in ("generate", "spec_to_code", "generate_code", "codegen", "to_code"):
-        fn = getattr(spec2code, name, None)
-        if callable(fn):
-            return {"job_id": job.get("job_id"), "env": job.get("env"), "op": "spec2code",
-                    "generator": name, "code": fn(payload)}
-    raise X2EntryError(
-        f"spec2code 中找不到代码生成函数；实际导出: "
-        f"{[n for n in dir(spec2code) if not n.startswith('_')]}")
+    ⚠️ **实测澄清**（与手册 §P5.4 的措辞不符，已留证）：
+    `spec2code` 包里**没有代码生成器** —— 它的全部函数只有
+    `get_backtest_timeout` / `get_data_cache_dir` / `validate_code`。
+    所谓「spec2code 生成策略类」并不发生在包里（那是作者侧的 agent 流程）。
+    故本入口只做**校验**这一件包能做且确实是它职责的事。
+
+    经人工确认：**只做 validator 集成，不做生成**。
+    """
+    from spec2code import validator
+
+    code = params.get("code")
+    if not code:
+        raise X2EntryError("validate_code 需要 params.code（策略源码文本）")
+    result = validator.validate_code(code)
+
+    # ValidationResult 的字段名随版本可能变，故保守地取已知字段并兜底
+    ok = bool(getattr(result, "is_valid", getattr(result, "valid", False)))
+    issues = list(getattr(result, "errors", []) or [])
+    warnings = list(getattr(result, "warnings", []) or [])
+    return {
+        "job_id": job.get("job_id"), "env": job.get("env"), "op": "validate_code",
+        "is_valid": ok,
+        "n_errors": len(issues),
+        "errors": [str(e) for e in issues[:20]],
+        "n_warnings": len(warnings),
+        "warnings": [str(w) for w in warnings[:20]],
+        "validator": "spec2code.validator.validate_code",
+    }
 
 
 def main(argv: list[str]) -> int:
@@ -168,8 +184,8 @@ def main(argv: list[str]) -> int:
                   "sum": params.get("a", 0) + params.get("b", 0)}
     elif op == "paper2spec":
         result = _op_paper2spec(job, params)
-    elif op == "spec2code":
-        result = _op_spec2code(job, params)
+    elif op == "validate_code":
+        result = _op_validate_code(job, params)
     elif op == "operator_pitfall":
         result = _op_operator_pitfall(job, params)
     else:
