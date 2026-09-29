@@ -4,7 +4,7 @@
 > **与 `HANDOFF.md` 的分工**：`HANDOFF.md` 是**一屏进度快照**（知道"到哪了"）；本文件是**完整交接手册**（知道"怎么接、坑在哪"）。
 > **与 `CLAUDE.md` 的分工**：`CLAUDE.md` 是**长期约定**（每个会话都适用）；本文件是**当前进度 + 操作入口**（每完成一个 Phase 更新一次）。
 > **与 `LOCAL_DEPLOYMENT_PLAN.md` 的分工**：手册是**唯一权威执行文档**；本文件**只做导航，不复制步骤**。
-> 最后更新：2026-09-29（**P3 完成时**）
+> 最后更新：2026-09-29（**P4 完成时**）
 
 ---
 
@@ -12,11 +12,14 @@
 
 - **项目**：本地量化研究平台（Windows 11）。四引擎 = **x2strategy + bt + backtrader + vectorbt**，DuckDB 存历史数据。
 - **位置**：`D:\project\quant`
-- **当前进度**：**P0 ✅、P1 ✅、P2 ✅、P3 ✅**；**下一步 = P4（引擎适配层）**。
+- **当前进度**：**P0 ✅、P1 ✅、P2 ✅、P3 ✅、P4 ✅**；**下一步 = P5 / P6**。
 - **数据供应商留空**，全部验证用 `src/quantlab/fixtures` 的**合成夹具**驱动（P2 已写入）。
 - **三个环境已就绪**：core（根）/ `envs/vbt` / `envs/x2`，各自独立 `uv.lock`，探针全绿。
-- **一键验收**：`python -m unittest discover -t . -s tests` → **213 tests OK**。
-- **接续工作的第一步**：读 `LOCAL_DEPLOYMENT_PLAN.md` 的 **§P4**，逐条照做、逐步留证。
+- **一键验收**：`python -m unittest discover -t . -s tests` → **268 tests OK**。
+- **三引擎对拍已过**：A/B/C 场景 reference ↔ backtrader 均 ~1e-16；bt 差异已证明属成交时点。
+- **接续工作的第一步**：读 `LOCAL_DEPLOYMENT_PLAN.md` 的 **§P5 / §P6**，逐条照做、逐步留证。
+- ⚠️ **开工前先看**：附录 F.4.4/F.8 与正文 §P4.5 的**成交口径冲突**（收盘 vs T+1 开盘），
+  本次按「以正文为准」取 **T+1 开盘** —— 详见 `HANDOFF.md` §7 第 11 项。
 
 ---
 
@@ -63,7 +66,7 @@ P0 环境地基 → P1 仓库骨架与环境隔离 → P2 数据层 → P3 契�
 上层依赖下层；**下层不稳，上层的验证结论无意义**。每 Phase 末尾有 Gate，**不过不得进入下一 Phase**。
 > 关键：**先做数据层合成夹具（P2.2），再做引擎适配（P4）** —— 否则三引擎对拍无从验证。
 
-### 2.3 当前目录结构（**P2 结束时**）
+### 2.3 当前目录结构（**P4 结束时**）
 
 ```text
 D:\project\quant\
@@ -72,28 +75,43 @@ D:\project\quant\
   config\sources.yaml                            # 供应商配置（空模板，待人工填）
   docs\archive\OPEN_SOURCE_COMPARISON.md         # 归档，勿读
   docs\deploy\{EVIDENCE.md, HANDOFF.md, HANDOFF_MANUAL.md}
-  envs\vbt\ { pyproject.toml, uv.lock, probe.py, entry.py }   # vectorbt 隔离环境
+  envs\vbt\ { pyproject.toml, uv.lock, probe.py, entry.py,
+              _spawn_guard_demo.py }             # vectorbt 隔离环境；entry 支持 op=scan
   envs\x2\  { pyproject.toml, uv.lock, probe.py, entry.py }   # x2strategy + litellm
   src\quantlab\
     __init__.py  probe.py  cli.py                # cli: `quantlab ingest` / `quantlab schema`
-    engines\bridge.py                            # 跨环境桥（core 侧）
     store\   { schema.sql, migrate.py, db.py, snapshot_guard.py,
-               warehouse.py, atomic.py, canonical.py }          # ← P2 新增
+               warehouse.py, atomic.py, canonical.py }          # P2：存储层 + 跨环境桥
     fixtures\{ spec.py, synth.py }                                # ← P2 新增（合成夹具）
     ingest\  { base.py, orchestrator.py, adapters\{akshare,yfinance,macro_fred,synthetic,_util}.py }
-    quality\ { clean.py, checks.py }                              # ← P2 新增（Silver/Gold + 校验）
-    contract\{ types.py, lint.py, emit.py }                       # ← P3 新增（契约 + 闸门 + 发射器）
+    quality\ { clean.py, checks.py }                              # P2：Silver/Gold + 质量校验
+    contract\{ types.py, lint.py, emit.py }                       # P3：契约 / 闸门 / 发射器
+    engines\ { bridge.py, base.py, execution.py,                  # P4：引擎适配层
+               reference.py, backtrader_runner.py, bt_runner.py }
   data\  bronze\synthetic\<snapshot_id>\*.parquet   # 夹具快照（gitignored，可重建）
-         silver\ gold\                              # P2 已产出 gold **视图**（尚未落盘）
+         silver\ gold\                              # gold 目前是**视图**（尚未落盘）
          warehouse.duckdb                           # DuckDB 台账（派生，可重建）
   runs\                                            # 运行产物（gitignored）
   tests\  { __init__.py, helpers.py,
-            test_p2_1_contract.py, test_p2_2_fixtures.py, test_p2_3_store.py,
-            test_p2_4_adapters.py, test_p2_5_ingest.py, test_p2_6_quality.py,
-            test_p3_contract.py }
+            test_p2_*.py, test_p3_contract.py,
+            test_p4_reference.py, test_engine_parity.py, test_p4_vbt_bridge.py }
 ```
 
-> P3–P6 还将新增 `src/quantlab/{contract,portfolio,eval,registry}`；届时目录约定见手册 §3.3。
+> P5–P6 还将新增 `src/quantlab/{x2,portfolio,eval,registry}`；届时目录约定见手册 §3.3。
+
+### 2.4 统一成交口径（**P4 定案，改它要先想清楚**）
+
+```text
+信号在 T 日收盘生成  →  T+1 开盘价成交  →  T+1 不可交易则顺延到下一个可交易会话
+```
+
+**口径来自正文 §P4.5**（附录 F.4.4/F.8 写的是「收盘」，两处冲突 → 手册规定以正文为准）。
+实现集中在 **`src/quantlab/engines/execution.py`**（`MatchEngine` / `run_reference`），
+它是**语义真值**；`reference` runner 直接复用它；backtrader runner 已对齐到 ~1e-16。
+**bt** 因 API 限制实际落在 **T+1 收盘**，该差异已记录并**证明**归因（见 `parity_report.md`）。
+
+> 想改成 F.4 的收盘口径：给 `run_reference(..., fill_at="close")` 即可（诊断模式已内置），
+> 但**必须同步重跑对拍**，并更新 `parity_report.md` 与本节。
 
 ---
 
@@ -154,6 +172,10 @@ core                    → 读 result.json 继续；失败抛 BridgeError（非
 | 20 | 手算基准用 `~above.shift(1).fillna(False)` 会凭空造出**幻影穿越** | 把「前一日状态未知」当成「前一日在下方」，首个可评估日多出一次穿越 | 改用 `fast.shift(1) <= slow.shift(1)`（NaN 参与比较恒为 False） |
 | 21 | 「每周调仓」**不等于**「间隔恰好 7 天」 | 周一休市则决策顺延到周二 → 相邻两次可只隔 6 天；按 `gap >= 7` 断言会误报 | 正确判据是「每个自然周至多一次」（`isocalendar` 去重） |
 | 22 | 闸门规则要能**递归**遍历 `Expr` 树 | `shift` 若在深层嵌套里，只查顶层会漏判未来函数 | `Expr.walk()` 深度优先；用例专门覆盖「深层嵌套的 shift 仍生效」与「`shift(0)` 不算解除」 |
+| 23 | **`envs/vbt` 没有 parquet 引擎** | 桥递过去的输入 Parquet 直接 `ImportError` —— 跨环境交换**跑不通** | 用该环境**已有**的 `duckdb` 读写 Parquet；**不要**为读一个文件去动那个隔离环境的依赖求解 |
+| 24 | **减仓到非零目标会被静默忽略** | 只在目标权重 = 0 时才卖 → 「1.0 减到 0.25」持仓**完全不动**、不报错；backtrader 侧则 `min(-delta,current)` → **清成 0** | 按**目标份额**卖（含减仓）；只测 buy&hold 与清仓**永远发现不了**，必须有「部分减仓」用例 |
+| 25 | spawn 演示别指望 `multiprocessing` 自己拦 | 实测它**挂住**（既不报错也不退出）→ 用例超时，无法作为证据 | 用**继承的深度计数**（spawn 继承环境变量）让失败确定且毫秒级 |
+| 26 | **`bt` 会传递性 import `yfinance`** | 在 core 进程里断言「SDK 不在 sys.modules」会**假阳性** | 凡「延迟导入」类断言，一律放到**独立子进程**里验证 |
 
 ---
 
@@ -186,6 +208,26 @@ cb73878  docs(deploy): record P1 evidence and Gate P1 verdict; update handoff
 ```
 
 > **全部证据**（每条命令 + 实际输出 + 逐项判定）见 `docs/deploy/EVIDENCE.md`。**无证据的步骤视为未完成。**
+
+### P4 引擎适配层 — 🚦 **通过（无豁免项）**
+
+| 步骤 | 结果 |
+| --- | --- |
+| P4.1 | `engines/base.py`：协议 + 注册表；未知引擎**报错不回退**；`run_meta` 缺字段**构造即报错** |
+| P4.2 | backtrader：5 项验收全过（解析答案、停牌无成交、现金非负、缩减订单、成本单调） |
+| P4.3 | bt：4 项验收全过（含「未成交卖单不提前释放资金」） |
+| P4.4 | vectorbt 经桥调用；**spawn 保护有可执行的反证**（`--unguarded` 复现失败） |
+| P4.5 | **对拍 A/B/C 全过**；差异已分类（见 `docs/deploy/parity_report.md`） |
+| 自动化 | **268 tests OK** |
+
+> ⚠️ **P4 最有价值的是「静默失效」类缺陷**（5 处，全都不报错、不崩溃）：
+> 净值静默变 NaN、成本约束被绕过、成本双计 999.0、backtrader 主时间轴错位、
+> 权重列类型不一致导致**静默空仓**。逐条已补专条用例。详见 `EVIDENCE.md` §P4。
+
+> ⚠️ **成交口径冲突（需人工知悉）**：附录 F.4.4/F.8 写「信号后第一个有效交易日**收盘**」，
+> 正文 §P4.5 写「T+1 **开盘**」。手册规定「凡与正文冲突处，以正文为准」→ 取 **T+1 开盘**。
+> bt 引擎因其 API 限制实际落在 **T+1 收盘**，该差异已按 §P4.5 要求**记录并证明**归因，
+> **未**调其他引擎去迁就它。
 
 ### P3 契约层 — 🚦 **通过（无豁免项）**
 

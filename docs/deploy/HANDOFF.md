@@ -8,9 +8,9 @@
 
 ## 1. 一句话状态
 
-**P3（契约层）已完成并通过 Gate P3（无豁免项）；下一步执行 P4（引擎适配层）。**
-（更新时间：2026-09-29，P3 完成时）
-（历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免）
+**P4（引擎适配层）已完成并通过 Gate P4（无豁免项）；下一步执行 P5 / P6。**
+（更新时间：2026-09-29，P4 完成时）
+（历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免）
 
 ---
 
@@ -120,18 +120,40 @@
 
 ---
 
-## 6. 下一步：P4（照 `LOCAL_DEPLOYMENT_PLAN.md` 执行，勿凭记忆）
+## 5.3 已完成（P4 · 引擎适配层）
+
+| 步骤 | 结果 |
+| --- | --- |
+| P4.1 | `engines/base.py`：`BacktestRunner` 协议 + 注册表；**未知引擎报错不回退**；`run_meta` 缺复现性字段**构造即报错**；另加 `reference`（语义真值 oracle） |
+| P4.2 | `engines/backtrader_runner.py`：`cheat_on_open` + `next_open()` 按成交价折算份额；5 项验收全过 |
+| P4.3 | `engines/bt_runner.py`：权重前移一根，bt 在 T+1 **收盘**成交（差异已分类） |
+| P4.4 | `envs/vbt/entry.py` 的 `op=scan` + `_spawn_guard_demo.py`（`--unguarded` **可复现失败**）；core 内不加载 vectorbt/numba |
+| P4.5 | **对拍 A/B/C 全过**：reference ↔ backtrader 在三个场景均 **~1e-16**；bt 的偏差**已证明**属成交时点 |
+| **自动化** | **268 tests OK**（213 + 55 P4） |
+| 🚦 | **Gate P4 通过（无豁免项）** |
+
+> ⚠️ P4 最有价值的产出：**5 处「静默失效」缺陷**（净值变 NaN、成本被绕过、
+> 成本双计、主时间轴错位、权重列类型不一致导致静默空仓）——
+> 全都不报错、不崩溃。详见 `EVIDENCE.md` §P4 与 **`docs/deploy/parity_report.md`**。
+
+---
+
+## 6. 下一步：P5（x2strategy 集成）/ P6（组合与报告）
+
+> ⚠️ **执行前先确认**：附录 F.4.4/F.8 的「收盘成交」与正文 §P4.5 的「T+1 开盘成交」
+> 冲突，本次按「以正文为准」取 **T+1 开盘**。若你希望改口径，需回改
+> `engines/execution.py` 的 `fill_at`（改动集中、影响面小）。
 
 | 步骤 | 要点 |
 | --- | --- |
-| P4.x | 引擎适配：backtrader 5 项 / bt 4 项 / vectorbt **spawn 保护** |
-| P4.x | 对拍场景 A/B/C 容差内一致；差异**已分类** |
-| 🚦 | **Gate P4** |
+| P5.1 | `config/llm.toml` 空模板；未配置时**明确报错**，不得静默用付费默认 |
+| P5.2 | `paper2spec` 封装（经桥调 x2 环境）；产出**必须过 P3.2 闸门**才可入库 |
+| P6.x | 组合与报告；**年化口径按所用日历推导并全局统一**（不写死 365/252） |
+| 🚦 | **Gate P5 / Gate P6** |
 
-> P4 的逐条验证项与失败处理**以手册 §P4 为准**，本表仅为导航。
-> **P3 已交付可直接复用**：`contract.emit.emit_weights`（金标准权重）、
-> `contract.types.validate_target_weights`（对拍前的合法性门）、
-> `quantlab.quality.clean.gold_backtest_view`（带 `traded` 掩码的回测输入）。
+> **P4 已交付可直接复用**：`engines.base.load_bundle_from_fixture()`（夹具→回测输入）、
+> `engines.base.get_runner()`（按名取引擎）、`engines.execution`（撮合语义真值）、
+> `docs/deploy/parity_report.md`（三引擎口径差异台账）。
 
 ---
 
@@ -141,8 +163,11 @@
 | --- | --- | --- |
 | 1 | 长路径与 Defender 排除（管理员） | 可延后，非阻塞 |
 | 2 | 数据供应商配置 | **等人工填写** `config/sources.yaml` |
-| 3 | x2strategy 的 LLM 通道（云端 API / 本地 Ollama） | P5 前决定 |
+| 3 | x2strategy 的 LLM 通道（云端 API / 本地 Ollama） | **P5 前决定** |
 | 4 | P7 定时任务是否启用 | 默认不启用 |
+| 11 | ⚠️ **成交口径冲突**：F.4.4/F.8 说「收盘」，正文 §P4.5 说「T+1 开盘」；本次按「以正文为准」取 **T+1 开盘** | **待你确认**。如要改回收盘口径，改 `engines/execution.py` 的 `fill_at` 即可（bt 用的正是收盘口径） |
+| 12 | §P4.5 场景 C 原文含「汇率」，但三个 runner **均不建模换汇**（`fx_cost_bps≠0` 时直接报错，不静默忽略） | 建议 P6 补；届时对拍场景 C 才算完整 |
+| 13 | **P4 改动尚未 git 提交** | 待你确认后提交 |
 | 5 | `envs/vbt` 的 `plotly<7` 上界（现 6.9.0） | **已人工裁决**；待 vectorbt 上游适配 plotly 7 后可解除 |
 | 6 | `litellm.__version__` 不存在 | P5 改用 `importlib.metadata.version("litellm")` |
 | 7 | 手工跑 uv 前须清 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV` | 例行注意（`bridge.py` 已自动清洗） |

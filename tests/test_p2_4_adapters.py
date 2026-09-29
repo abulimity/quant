@@ -17,7 +17,10 @@
 from __future__ import annotations
 
 import importlib
+import os
+import subprocess
 import sys
+import textwrap
 import unittest
 from datetime import date
 
@@ -91,12 +94,24 @@ class TestSkeletonsImportWithoutSdk(unittest.TestCase):
                 importlib.import_module(name)
 
     def test_vendor_sdks_are_not_imported_at_module_level(self) -> None:
-        """延迟导入的**可执行**证明：导入骨架后，SDK 仍不在 sys.modules 里。"""
-        for name in ADAPTER_MODULES:
-            importlib.import_module(name)
-        leaked = [sdk for sdk in VENDOR_SDKS if sdk in sys.modules]
-        self.assertEqual(leaked, [],
-                         f"这些 SDK 在骨架导入时被拉进来了（应延迟到 fetch()）: {leaked}")
+        """延迟导入的**可执行**证明：导入骨架后，SDK 仍不在 sys.modules 里。
+
+        必须在**独立子进程**里测：本进程可能因别的模块（例如 `bt`，它自身依赖
+        yfinance）把 SDK 带进来，那与「适配器是否延迟导入」无关，会给出假阳性。
+        """
+        code = textwrap.dedent(f"""
+            import sys
+            for m in {ADAPTER_MODULES!r}:
+                __import__(m)
+            leaked = [s for s in {VENDOR_SDKS!r} if s in sys.modules]
+            print("LEAKED", leaked)
+        """)
+        env = {"PYTHONIOENCODING": "utf-8", "PATH": os.environ["PATH"]}
+        proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env=env)
+        self.assertIn("LEAKED []", proc.stdout,
+                      f"骨架导入时把 SDK 拉进来了（应延迟到 fetch()）: "
+                      f"{proc.stdout!r} {proc.stderr!r}")
 
     def test_source_protocol_is_satisfied(self) -> None:
         for src in (AkshareSource(), YfinanceSource(), FredSource()):
