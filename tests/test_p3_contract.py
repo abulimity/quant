@@ -359,8 +359,13 @@ class TestLintGateOriginPolicy(unittest.TestCase):
     """§P3.2 闸门口径：x2 来源 fail-closed；手写规格不阻塞 P3/P4。"""
 
     def test_x2_origin_is_blocked_while_x2_rules_unavailable(self) -> None:
-        """**fail-closed**：x2 规则未接通时，x2 来源规格不得入库（而非默认放行）。"""
-        report = lint_spec(cross_spec(origin=ORIGIN_X2STRATEGY))
+        """**fail-closed**：x2 规则未接通时，x2 来源规格不得入库（而非默认放行）。
+
+        用**显式覆盖** `x2_rules_available=False`，而不是依赖模块常量的当前值 ——
+        否则 P5.2 接通 x2 规则后这条会「自动失效」，看起来像测试坏了，
+        实际是它本来就没锁定住要测的东西。
+        """
+        report = lint_spec(cross_spec(origin=ORIGIN_X2STRATEGY), x2_rules_available=False)
         self.assertFalse(report.passed)
         self.assertIn("X2.rules_unavailable", {f.rule for f in report.errors})
         self.assertIn("x2strategy", report.rules_run)
@@ -369,6 +374,26 @@ class TestLintGateOriginPolicy(unittest.TestCase):
         """（模拟 P5 接通后）同一份规格应当通过 —— 证明阻断的原因确实是「规则没接」。"""
         report = lint_spec(cross_spec(origin=ORIGIN_X2STRATEGY), x2_rules_available=True)
         self.assertTrue(report.passed)
+
+    def test_x2_rules_are_actually_wired_on(self) -> None:
+        """P5.2 后 x2 规则应**已接通**：不再因「规则没接」阻断 x2 来源规格。"""
+        from quantlab.contract.lint import X2_RULES_AVAILABLE, X2_RULE_SEVERITY
+
+        self.assertTrue(X2_RULES_AVAILABLE, "x2 规则仍未接通")
+        report = lint_spec(cross_spec(origin=ORIGIN_X2STRATEGY))
+        self.assertTrue(report.passed)
+        self.assertNotIn("X2.rules_unavailable", {f.rule for f in report.errors})
+        self.assertIn(X2_RULE_SEVERITY, ("note", "warning"),
+                      "算子提示应为咨询性，不应阻断入库（经人工确认的取舍）")
+
+    def test_operator_notes_are_consultative_not_blocking(self) -> None:
+        """算子提示命中时**不得**阻断 —— 它讲的是数值陷阱，与未来函数无关。"""
+        report = lint_spec(cross_spec(origin=ORIGIN_X2STRATEGY),
+                           operator_notes=["second_moment (score=0.83): 注意数值稳定性"])
+        self.assertTrue(report.passed, "咨询性算子提示竟然阻断了入库")
+        notes = [f for f in report.findings if f.rule.startswith("X2.operator_notes")]
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0].severity, "note")
 
     def test_handwritten_origin_is_not_blocked(self) -> None:
         report = lint_spec(cross_spec(origin=ORIGIN_HANDWRITTEN))

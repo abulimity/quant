@@ -54,8 +54,19 @@ AVAILABILITY_FIELDS: dict[str, str] = {
     "fundamentals": "available_utc",
 }
 
-# x2strategy 的算子 pitfall 检测**尚未接通**（P5）。接通后置 True。
-X2_RULES_AVAILABLE = False
+# x2strategy 的算子 pitfall 检测已接通（P5.2）。置 False 仅用于回归测试。
+X2_RULES_AVAILABLE = True
+
+# x2 规则的**严重度**：默认 "note"（咨询性）。
+#
+# 为什么不是 "error"（**重要取舍，经人工确认**）：
+#   1. 它命中的是「你用了这些**数值算子**，注意其数值稳定性陷阱」，
+#      与「未来函数」是**两回事** —— 后者由 G4 结构性拦截，更可靠；
+#   2. 内置语料仅 4 条，且靠**措辞相似度**召回 —— 既覆盖不全，又可能误拦
+#      （措辞像但实际无关）。设成 error 会**永久阻断**几乎所有 x2 规格；
+#   3. 故它作为「算子注意点」**随规格展示/存档**，供人工判断，不阻断入库。
+# 若将来语料扩充、召回质量经评估可靠，可改为 "error"。
+X2_RULE_SEVERITY = "note"
 
 
 @dataclass
@@ -315,6 +326,7 @@ def lint_spec(
     x2_rules_available: bool | None = None,
     listing_dates: dict[int, object] | None = None,
     as_of: object | None = None,
+    operator_notes: list[str] | None = None,
 ) -> LintReport:
     """跑闸门，返回报告。**不抛异常**（调用方决定是否 `raise_if_failed`）。
 
@@ -339,11 +351,20 @@ def lint_spec(
         if not available:
             report.findings.append(LintFinding(
                 "X2.rules_unavailable", "error",
-                "规格来源为 x2strategy，但 x2strategy 的算子 pitfall 检测**尚未接通**（P5）。\n"
+                "规格来源为 x2strategy，但 x2strategy 的算子 pitfall 检测**尚未接通**。\n"
                 "    fail-closed：此类规格在 x2 规则可用之前**不得入库**，"
                 "而不是默认放行。\n"
-                "    处置：待 P5 接通后重跑；P3/P4 的对拍请改用手写规格 "
+                "    处置：接通后重跑；P3/P4 的对拍请改用手写规格 "
                 "并标记 origin='handwritten'。",
                 location="origin"))
+        elif operator_notes:
+            report.findings.append(LintFinding(
+                f"X2.operator_notes[{len(operator_notes)}]",
+                X2_RULE_SEVERITY,
+                "x2strategy 算子误用检索命中了以下**数值算子**注意点。\n"
+                "    这是**咨询性**提示，**不阻断入库** —— 它讲的是数值稳定性陷阱，\n"
+                "    与「未来函数」是两回事（后者由 G4 结构性拦截）。请人工确认是否相关。\n"
+                "    " + "\n    ".join(str(n)[:200] for n in operator_notes[:5]),
+                location="operator_pitfall"))
 
     return report

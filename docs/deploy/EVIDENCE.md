@@ -1453,6 +1453,70 @@ OK
 
 **→ 准予进入 P5（x2strategy 集成）与 P6（组合与报告）。**
 
+---
+
+## P5 · x2strategy 集成
+
+- 执行日期：2026-09-29
+- 前置：**Gate P4 已通过**（`efdbe63`）
+
+### P5 前置：网络事实**复核与更正**（P2 记录已过时）
+
+P2 曾记「`raw.githubusercontent.com` 在本机不可达」。P5.2 实测**不成立**，且发现可用镜像：
+
+| 目标 | 直连 | 走代理 `127.0.0.1:7897` |
+| --- | --- | --- |
+| `raw.githubusercontent.com` | ✅ **301**（可达） | ❌ 000（schannel TLS 握手失败） |
+| `huggingface.co` | ❌ 000 | ❌ 000 |
+| **`hf-mirror.com`** | ✅ **200** | — |
+| `http://example.com` | — | ✅ 200（代理对 **HTTP** 正常） |
+| `https://…` 经代理 | — | ❌ schannel 握手失败 |
+
+**结论与处置**：
+
+1. `raw.githubusercontent.com` **现在直连可达** → litellm 成本表拉取问题应已缓解（待复核）；
+2. 代理 `127.0.0.1:7897` 对 **HTTPS 握手失败**（schannel），对 HTTP 正常 ——
+   更像只做明文转发的代理，**不能**用来下 HuggingFace 模型；
+3. HuggingFace **官方站不可达，但镜像 `hf-mirror.com` 可达** →
+   下模型请设 `HF_ENDPOINT=https://hf-mirror.com`。
+
+> ⚠️ 这条更正很重要：若不复核而沿用 P2 的旧结论，会得出「HF 只能靠代理」的错误判断。
+
+### P5.1 LLM 通道
+
+**产出**：`config/llm.toml`、`src/quantlab/x2/llm.py`、`tests/test_p5_llm.py`（15 用例）。
+
+逐条判定：
+
+- [x] **V0** 仓库内**无明文 API key** —— 用例扫描 `src/config/tests/envs` 四目录，命中即红
+- [x] **V1** 未配置时 `require()` **明确报错**并给出可操作指引（改哪个文件、设哪个变量、怎么自检），
+      **绝不**静默使用付费默认值
+- [x] `describe()` **不泄漏**凭据值：连 `api_base` 也只报布尔（有专门用例钉住）
+- [x] 文件不存在 → 返回「未配置」而非崩溃，**不阻塞** P5 其余步骤
+- [x] 支持 cloud / ollama 两类后端
+
+**实测自检输出**（人工配置后）：
+
+```text
+model_id          : anthropic/claude-sonnet-4-5
+api_key_env       : ANTHROPIC_AUTH_TOKEN
+api_key_present   : True
+api_base_resolved : True
+usable            : True
+LLM 通道：可用
+```
+
+#### ⚠️ 人工配置时暴露的设计缺陷（已修，`8842c8f`）
+
+| # | 问题 | 后果 | 处置 |
+| --- | --- | --- | --- |
+| 1 | `api_base_env` **命名把「变量名」与「URL」混在一起** | 人工填成 URL → 恒为 False，且**看不出原因** | 拆为 `api_base`（字面 URL，**非凭据**可入库）与 `api_base_env`（变量名，优先） |
+| 2 | 自检只说「不可用」，不给线索 | 人工无从判断该填哪个变量 | 自检列出候选环境变量的**有无**（**绝不打印值**），并直接点明「把 api_key_env 改成已设置的那个」 |
+| 3 | 用例断言「kind 为空」 | P5.1 完成后人工填好配置，该断言**一填就红** —— 把「配置好了」误判成故障 | 改为**结构校验**（kind 取值合法、cloud 必填项齐全、`api_key_env` 必须是变量名形态） |
+
+**人工配置结果**：`kind=cloud` / `name=anthropic` / `api_key_env=ANTHROPIC_AUTH_TOKEN` /
+`api_base_env=ANTHROPIC_BASE_URL`（两者均为**环境变量名**，key 值不在仓库内）。
+
 ### 待人工知悉项（P4 新增）
 
 | # | 事项 | 影响 | 建议 |

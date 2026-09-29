@@ -5,7 +5,11 @@ requires-python = ">=3.12"
 dependencies = [
     "duckdb>=1.5.5",
     "litellm>=1.102.0",
-    "x2strategy",
+    # [agent] extra：算子误用检测（§P3.2 的「x2strategy 规则」）所需。
+    # 带来 faiss-cpu / langchain-community / sentence-transformers（含 torch），
+    # 体积较大，但**没有它 P3.2 的 x2 规则就无法接通**（fail-closed 会一直挡住 x2 规格）。
+    # 其 embedding 模型默认从 HuggingFace 拉取；本机不通 HF，改走镜像 —— 见 entry.py。
+    "x2strategy[agent]",
 ]
 
 [[tool.uv.index]]
