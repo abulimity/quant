@@ -27,6 +27,19 @@ DEFAULT_CONFIG = PROJECT_ROOT / "config" / "llm.toml"
 KIND_CLOUD = "cloud"
 KIND_OLLAMA = "ollama"
 
+# 自检时用来提示「你可能设置的是这些」——**只报有无，绝不打印值**。
+CANDIDATE_KEY_ENVS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+)
+CANDIDATE_BASE_ENVS = (
+    "ANTHROPIC_BASE_URL",
+    "OPENAI_BASE_URL",
+    "DEEPSEEK_BASE_URL",
+)
+
 
 class LlmNotConfigured(RuntimeError):
     """LLM 通道未配置 —— 必须显式失败，不得静默使用付费默认值。"""
@@ -38,6 +51,11 @@ class LlmConfig:
     name: str = ""
     model: str = ""
     api_key_env: str = ""
+    # ⚠️ 区分「**字面 URL**」与「**环境变量名**」—— 二者极易混淆（已踩过一次）。
+    #   `api_base`     = 字面 URL，**不是凭据**，可以直接写在仓库里的配置文件中
+    #   `api_base_env` = 去哪个环境变量取 URL
+    # 优先级：`api_base_env`（且该变量确实存在）> `api_base`
+    api_base: str = ""
     api_base_env: str = ""
     timeout_s: int = 120
     ollama_base_url: str = "http://127.0.0.1:11434"
@@ -61,10 +79,16 @@ class LlmConfig:
                 self._how_to_configure(f"环境变量 {self.api_key_env} 未设置或为空"))
         return value
 
-    def api_base(self) -> str | None:
-        if not self.api_base_env:
-            return None
-        return os.environ.get(self.api_base_env) or None
+    def resolved_api_base(self) -> str | None:
+        """解析 base url：环境变量优先，其次字面值。**base url 不是凭据**，可以入库。"""
+        if self.api_base_env:
+            from_env = os.environ.get(self.api_base_env)
+            if from_env:
+                return from_env
+        return self.api_base or None
+
+    # 兼容旧名（P5.1 首版叫 api_base，但那是"环境变量名"，语义混淆，特此更名）
+    api_base_url = resolved_api_base
 
     def model_id(self) -> str:
         """litellm 用的模型串：`provider/model`（ollama 走 `ollama/<model>`）。"""
@@ -107,8 +131,9 @@ class LlmConfig:
             "model_id": self.model_id() if self.configured else "(未配置)",
             "api_key_env": self.api_key_env or "(空)",
             "api_key_present": self.api_key_present,     # 布尔，不是值
+            "api_base": self.api_base or "(空)",
             "api_base_env": self.api_base_env or "(空)",
-            "api_base_present": bool(self.api_base()) if self.api_base_env else False,
+            "api_base_resolved": bool(self.resolved_api_base()),
             "ollama_base_url": self.ollama_base_url,
             "configured": self.configured,
             "usable": self._usable(),
@@ -139,6 +164,7 @@ def load_llm_config(path: str | Path | None = None) -> LlmConfig:
         name=str(provider.get("name", "")).strip(),
         model=str(provider.get("model", "")).strip(),
         api_key_env=str(provider.get("api_key_env", "")).strip(),
+        api_base=str(provider.get("api_base", "")).strip(),
         api_base_env=str(provider.get("api_base_env", "")).strip(),
         timeout_s=int(provider.get("timeout_s", 120)),
         ollama_base_url=str(ollama.get("base_url", "http://127.0.0.1:11434")).strip(),
@@ -155,6 +181,21 @@ def main(argv: list[str] | None = None) -> int:
     status = config.describe()
     for key, value in status.items():
         print(f"  {key:18s}: {value}")
+
+    # 候选环境变量**只报有无**（不报内容）—— 这是排查「为什么没生效」最有用的一条：
+    # 实际部署里常出现「填了 A，但环境里其实设置的是 B」。
+    print("  --- 常见候选环境变量（只报有无，不报内容） ---")
+    for name in CANDIDATE_KEY_ENVS:
+        mark = "已设置" if os.environ.get(name) else "未设置"
+        print(f"  {name:24s}: {mark}")
+    for name in CANDIDATE_BASE_ENVS:
+        value = os.environ.get(name)
+        print(f"  {name:24s}: " + ("已设置" if value else "未设置"))
+    if config.api_key_env and os.environ.get(config.api_key_env):
+        print(f"  → 配置指向的 {config.api_key_env} **存在**，凭据可从环境变量取得。")
+    elif config.api_key_env:
+        print(f"  → 配置指向的 {config.api_key_env} **不存在**；"
+              f"若上面某个候选变量已设置，把 api_key_env 改成它即可。")
     if not args.check:
         return 0
     if status["usable"]:

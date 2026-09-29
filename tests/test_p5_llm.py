@@ -69,12 +69,24 @@ class TestNoCredentialsInRepo(unittest.TestCase):
             with self.subTest(pattern=pattern.pattern):
                 self.assertIsNone(pattern.search(text), "llm.toml 里出现疑似明文 key")
 
-    def test_shipped_config_is_an_empty_template(self) -> None:
-        """交付时应当**未配置**（kind 为空），由人工填写。"""
+    def test_shipped_config_is_structurally_valid(self) -> None:
+        """随仓库交付的配置必须**可解析且结构完整**。
+
+        注意：**不能**断言「kind 为空」。P5.1 完成后，人工会把 provider 填好
+        （这是预期状态），所以这里只校验结构 —— 该断「空」，人工一填就红，
+        那是在把「配置好了」误判成故障。
+        真正要守的是：**凭据值不得出现在文件里**（由上面两条扫描覆盖）。
+        """
         config = load_llm_config(LLM_TOML)
-        self.assertEqual(config.kind, "")
-        self.assertFalse(config.configured)
-        self.assertFalse(config.api_key_present)
+        self.assertIn(config.kind, ("", "cloud", "ollama"),
+                      f"kind 取值非法: {config.kind!r}")
+        if config.kind == KIND_CLOUD:
+            self.assertTrue(config.name, "cloud 必须填 name")
+            self.assertTrue(config.model, "cloud 必须填 model")
+            self.assertTrue(config.api_key_env, "cloud 必须声明 api_key_env")
+            # api_key_env 必须是**变量名**，不能是 key 值本身
+            self.assertRegex(config.api_key_env, r"^[A-Z][A-Z0-9_]*$",
+                             "api_key_env 应当是环境变量名（大写+下划线），不是 key 值")
 
     def test_no_plaintext_keys_anywhere_in_tracked_sources(self) -> None:
         """扫源码与配置目录（跳过 .venv/缓存），不得出现明文 key。"""
@@ -196,7 +208,7 @@ class TestConfiguredBehaviour(unittest.TestCase):
             config = LlmConfig(kind=KIND_CLOUD, name="anthropic", model="m",
                                api_key_env="X", api_base_env=env_name)
             status = config.describe()
-            self.assertTrue(status["api_base_present"])
+            self.assertTrue(status["api_base_resolved"])
             self.assertNotIn("example.internal", repr(status))
         finally:
             os.environ.pop(env_name, None)

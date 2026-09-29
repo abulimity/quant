@@ -1,31 +1,38 @@
 # LLM 通道配置（LOCAL_DEPLOYMENT_PLAN.md §P5.1）
 #
-# ⚠️ **本文件绝不写凭据。** 这里只写「去读哪个环境变量」，
-#    key 的值一律由环境变量提供（CLAUDE.md：凭据一律走环境变量，不得写入仓库）。
+# ⚠️ **唯一不能写进本文件的是 API key 本身。** 其余都可以写。
+#    key 一律由环境变量提供（CLAUDE.md：凭据一律走环境变量，不得写入仓库）。
 #
-# 填好后可用下面这条自检（**不会打印 key 的值**）：
-#     .\.venv\Scripts\python.exe -m quantlab.x2.llm --check
+# 自检（**不会打印 key 的值**）：
+#     python -m quantlab.x2.llm --check
 #
-# 未配置时，调用会**明确报错并说明如何配置**，绝不静默使用付费默认值（§P5.1 V1）。
+# 未配置时调用会**明确报错并说明如何配置**，绝不静默使用付费默认值（§P5.1 V1）。
 
 [provider]
 # 后端类型："" （未配置）/ "cloud"（云端 API）/ "ollama"（本地离线）
-kind = ""
+kind = "cloud"
 
-# provider 名，例如 "anthropic" / "openai"。
-# litellm 的模型串前缀即来自这里（如 anthropic/claude-sonnet-4-5）。
-name = ""
+# provider 名（litellm 的模型串前缀），例如 "anthropic" / "openai"。
+# 走 Anthropic 兼容中转时同样填 "anthropic"。
+name = "anthropic"
 
-# 模型 id，例如 "claude-sonnet-4-5"。
-model = ""
+# 模型 id。**必填**，否则 model_id 会拼成 "anthropic/" 而不可用。
+model = "claude-sonnet-4-5"
 
-# **环境变量名**（不是值）。加载器会去 os.environ 里取。
-api_key_env = ""
+# 【凭据】这里填**环境变量名**（不是 key 本身）。
+# 常见取值：ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / OPENAI_API_KEY
+# 自检会告诉你哪些环境变量**已设置**（只报有无，不报内容）。
+api_key_env = "ANTHROPIC_AUTH_TOKEN"
 
-# 可选：自定义 base url 的**环境变量名**（走代理/自建网关时用）。
-api_base_env = ""
+# base url 的**字面值**。base url **不是凭据**，所以可以直接写在这里。
+# 走 Anthropic 兼容中转（如 DeepSeek）时填其 anthropic 端点；留空则用官方默认。
+api_base = ""
 
-# 可选：请求超时（秒）
+# 若 base url 想走环境变量，填**环境变量名**；它优先于上面的 api_base。
+# 你的环境里 ANTHROPIC_BASE_URL 可能已由外部工具设置好，直接填它即可。
+api_base_env = "ANTHROPIC_BASE_URL"
+
+# 请求超时（秒）
 timeout_s = 120
 
 
