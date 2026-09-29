@@ -612,3 +612,54 @@ exit=0
 **P1.5 完成定义达成**：跨环境调用与失败传播均可验证。
 
 ---
+
+### 🚦 Gate P1 核验
+
+**复现性（干净目录重建）** —— 从 git 归档一个**不含任何 `.venv`/忽略目录**的干净树，逐个环境按锁重建：
+
+```powershell
+git archive --format=tar -o "$env:TEMP\quant_clean\repo.tar" HEAD
+tar -xf "$env:TEMP\quant_clean\repo.tar" -C "$env:TEMP\quant_clean"
+cd "$env:TEMP\quant_clean"
+uv sync --locked -q                        # root  exit=0
+uv sync --locked -q --project envs/vbt     # vbt   exit=0
+uv sync --locked -q --project envs/x2      # x2    exit=0
+# 干净树中重跑三个探针
+uv run python src/quantlab/probe.py                      # core exit=0
+uv run --project envs/vbt python envs/vbt/probe.py       # vbt  exit=0
+uv run --project envs/x2  python envs/x2/probe.py        # x2   exit=0
+```
+
+干净树内容：`config/ docs/ envs/ src/ .gitignore .python-version CLAUDE.md LOCAL_DEPLOYMENT_PLAN.md pyproject.toml uv.lock`；三个 `.venv` 均在新目录**重新生成**（`Test-Path` 全为 True），三个探针 **`import_ok`/`duckdb_read_write`/`spawn_guard_ok` 全部 true、退出码 0**。
+
+| 检查 | 通过条件 | 结果 | 证据位置 |
+| --- | --- | --- | --- |
+| 仓库 | git 已初始化，忽略规则生效 | ✅ 首提交 `40de546`，P1 提交 `f7cfdb6`；`data/`、`runs/`、`.env` 均命中忽略 | P1.1 |
+| 环境 | 每环境独立 `uv.lock`；无 uv workspace；探针全绿 | ✅ **3 份** `uv.lock`；`[tool.uv.workspace]` **0 命中**；3 探针 `exit=0` | P1.3 / P1.4 |
+| 边界 | 环境边界表已留证（含 backtrader 归属决定） | ✅ 边界表已留证；**backtrader 归 core**，不建 `envs/btrader` | P1.3 |
+| 版本 | 每环境实际 Python 版本与理由已留证；无环境靠放宽组件约束才装上 | ✅ core/vbt/x2 均 **3.12.13**，理由逐环境记录；唯一人工干预是**收窄** `plotly<7` | P1.3 |
+| 桥 | 跨环境调用成功，失败可传播 | ✅ 自检 `SELFTEST OK`：vbt/x2 加法回传；vbt 抛异常 → `returncode=1` 且信息保留 | P1.5 |
+| 复现 | `uv sync --locked` 在干净目录可重建环境 | ✅ 见上「干净目录重建」，三环境 + 三探针全通过 | 本节 |
+
+### 🚦 Gate P1 结论：**通过**
+
+> **（无豁免项）**。P1 期间遇到两处手册未覆盖的情形，均已按规程处置并留证：
+> 1. **`uv init` 自动并入 workspace** —— 属**已复现的执行陷阱**，按 §3.1 要求修复（`--no-workspace`），**未放水**；
+> 2. **vectorbt × plotly 7 冲突** —— 按 §0.1-6 **停下请示**，经**人工裁决**采用「在 `envs/vbt` 内固定 `plotly<7`」，**未**使用 `--no-deps`/force install/关闭 TLS。
+>
+> 另有 P1.2 前置发现（外部工具注入 `UV_PROJECT_ENVIRONMENT` / `VIRTUAL_ENV`），已剥离并在 `bridge.py` 中做了防御性清洗。
+
+**→ 准予进入 P2（数据层）。**（P1 未产生任何业务代码，符合 Gate「此 Gate 不过禁止开始写业务代码」的约束。）
+
+### 待人工知悉项（P1 新增）
+
+| # | 事项 | 影响 | 建议 |
+| --- | --- | --- | --- |
+| 1 | 外部工具「Agents Anywhere」注入 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV` | 手工执行 uv 命令会把环境建到错误位置、破坏隔离 | 在本项目手工跑 uv 前先 `Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV`；`bridge.py` 已自动清洗 |
+| 2 | `envs/vbt` 固定了 `plotly<7`（现为 6.9.0） | 仅影响 vbt 环境；vectorbt 1.1.0 依赖 plotly 无上界，plotly 7 改名导致其导入失败 | 待 vectorbt 上游修复后可解除（当前上游最新即 1.1.0） |
+| 3 | `litellm.__version__` 不存在 | 手册 P5.1 的该检查会失败 | P5 改用 `importlib.metadata.version("litellm")` |
+| 4 | x2strategy 的**导入名是 `paper2spec`/`spec2code`**，不是 `x2strategy` | 影响后续所有引用 | P5 起一律用真实模块名 |
+| 5 | `raw.githubusercontent.com` 在本机**不可达**（litellm 成本表拉取超时） | P5 的 LLM 在线能力可能受限 | P5 前确认网络策略，或走本地 Ollama |
+| 6 | 干净目录重建验证残留于 `%TEMP%\quant_clean` | 占磁盘 | 可随时删除（一条 `git archive` + `uv sync` 即可重建） |
+
+---

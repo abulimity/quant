@@ -8,7 +8,8 @@
 
 ## 1. 一句话状态
 
-**P0（环境地基）已完成并放行；下一步执行 P1（仓库骨架与环境隔离）。**
+**P1（仓库骨架与环境隔离）已完成并通过 Gate P1（无豁免项）；下一步执行 P2（数据层）。**
+（更新时间：2026-09-29，P1 完成时）
 
 ---
 
@@ -37,7 +38,11 @@
 | **管理员权限** | **无** —— 需要管理员的操作会失败，须记录为 `SKIPPED(no admin)` 并交人工 |
 | 长路径 | `LongPathsEnabled=0`，**已人工豁免**（`GateP0.long_paths=WAIVED`） |
 | 数据供应商 | **留空**，用合成夹具驱动全部验证 |
-| 网络 | 未验证数据接口可用性 |
+| 网络 | 未验证数据接口可用性；**`raw.githubusercontent.com` 在本机不可达**（litellm 成本表拉取超时） |
+| **环境边界**（P1 定） | core（根）/ `envs/vbt` / `envs/x2`，**各自独立 `uv.lock`**；**backtrader 归 core**，未建 `envs/btrader` |
+| 三环境 Python | 均 **3.12.13**（起点即通过，无需下调） |
+| ⚠️ 外来环境变量 | 手工跑 uv 前**必须**清除 `UV_PROJECT_ENVIRONMENT` 与 `VIRTUAL_ENV`（外部工具「Agents Anywhere」注入，会把环境建到错误位置）；`src/quantlab/engines/bridge.py` 已自动清洗 |
+| x2strategy 导入名 | 发行名 `x2strategy`，但**可导入模块是 `paper2spec` / `spec2code`**（**没有** `x2strategy` 模块） |
 
 ---
 
@@ -53,7 +58,9 @@
 
 ---
 
-## 5. 已完成（P0）
+## 5. 已完成（P0 / P1）
+
+**P0（环境地基）**
 
 - ✅ P0.1 系统与工具核查 —— 除长路径外全部通过
 - ✅ P0.2 目录骨架（`config / data / docs / runs / src / tests` + `data\{bronze,silver,gold}`）、`EVIDENCE.md` 建立
@@ -61,28 +68,32 @@
 - ⚠️ 长路径 **人工豁免**；Defender 排除 `SKIPPED(no admin)`
 - 🚦 **Gate P0 通过（含 1 项显式豁免）**
 
+**P1（仓库骨架与环境隔离）**
+
+- ✅ P1.1 `git init` + 首提交（`40de546`）；`git check-ignore -v .env` / `data/` / `runs/` 三条均命中（P0.3 遗留项已补验）
+- ✅ P1.2 core 环境（Python 3.12.13；pyarrow/duckdb/bt/exchange-calendars 等；**backtrader 单独试装无冲突 → 留在 core**）；三个日历可用且覆盖十年
+- ✅ P1.3 `envs/vbt`（vectorbt 1.1.0，**固定 `plotly<7`**）、`envs/x2`（x2strategy 0.4.0 + litellm 1.102.0）；**环境边界表已留证**
+- ✅ P1.4 三份 `probe.py`（core/vbt/x2）全绿：`import_ok` / `duckdb_read_write` / `spawn_guard_ok`
+- ✅ P1.5 `src/quantlab/engines/bridge.py` + 两个 `entry.py` 桩：跨环境调用成功、**失败可传播**、锁哈希一致
+- 🚦 **Gate P1 通过（无豁免项）**；干净目录 `uv sync --locked` 三环境 + 三探针全通过
+
 全部证据见 `docs/deploy/EVIDENCE.md`。
 
 ---
 
-## 6. 下一步：P1（照 `LOCAL_DEPLOYMENT_PLAN.md` 执行，勿凭记忆）
+## 6. 下一步：P2（照 `LOCAL_DEPLOYMENT_PLAN.md` 执行，勿凭记忆）
 
 | 步骤 | 要点 |
 | --- | --- |
-| P1.1 | `git init` + 首次提交；补验 `git check-ignore -v .env`（P0.3 遗留项） |
-| P1.2 | 建立 **core** 环境（起点 Python 3.12）；先装 bt，backtrader **单独试装** |
-| P1.3 | 建立 `envs/vbt`（vectorbt）与 `envs/x2`（x2strategy + litellm）；**确定环境边界并留证** |
-| P1.4 | 每个环境写 `probe.py`，输出 JSON 探针（含 `spawn_guard_ok`） |
-| P1.5 | 实现跨环境桥 `src/quantlab/engines/bridge.py`（文件交换，失败须可传播） |
-| 🚦 | **Gate P1**：每环境独立 `uv.lock`、无 workspace、探针全绿、版本与理由留证 |
+| P2.1 | 数据契约 DDL（`symbols/bars_daily/corporate_actions/fx_rates/trading_calendar/macro_series/fundamentals/ingest_runs`）；幂等 + 主键约束生效 |
+| P2.2 | **合成夹具（本阶段核心，先于任何适配器）**：固定种子，内嵌分红/拆分/停牌/退市/晚上市/汇率/已知 buy&hold 答案 |
+| P2.3 | DuckDB 只读约定：研究侧 `read_only=True`；**只读连接执行写必须报错**（负向测试） |
+| P2.4 | `Source` 协议 + 空骨架适配器；未实现入口抛明确的 `NotImplementedError("VENDOR-TBD")` |
+| P2.5 | Ingest 编排 + 快照：临时文件 → 原子替换；中断可恢复、幂等、旧快照不可覆盖 |
+| P2.6 | Silver / Gold 清洗与质量校验；**每种注入缺陷都要被捕获**；休市/停牌/失败三态可区分 |
+| 🚦 | **Gate P2**：契约 / 夹具 / 存储 / 适配器 / 快照 / 质量 全部满足 |
 
-### 已知风险（P1 专属）
-
-1. **环境边界是全流程返工风险最高处**。按手册 P1.3 的决策规则执行：冲突就拆环境，**不得**为迁就某组件而放宽其版本约束。
-2. **`x2strategy` 的包名与安装方式未知**（GitHub 仓库，非 PyPI）。**先读仓库说明**，不要猜包名硬装。
-3. **vectorbt 依赖较新**（`pandas>=3.0.3`、`numpy>=2.4.6`），会牵制其 Python 下限。
-4. **numba 首次调用慢属正常**，勿误判卡死。
-5. 依赖求解失败时，**禁止** `--no-deps`、手工 force install、关闭 TLS 校验。
+> P2 的逐条验证项与失败处理**以手册 §P2 为准**，本表仅为导航。P2 专属风险与通用故障处置见手册 §P2 各步「失败处理」与**附录 C**。
 
 ---
 
@@ -94,6 +105,9 @@
 | 2 | 数据供应商配置 | **等人工填写** `config/sources.yaml` |
 | 3 | x2strategy 的 LLM 通道（云端 API / 本地 Ollama） | P5 前决定 |
 | 4 | P7 定时任务是否启用 | 默认不启用 |
+| 5 | `envs/vbt` 的 `plotly<7` 上界（现 6.9.0） | **已人工裁决**；待 vectorbt 上游适配 plotly 7 后可解除 |
+| 6 | `litellm.__version__` 不存在 | P5 改用 `importlib.metadata.version("litellm")` |
+| 7 | 手工跑 uv 前须清 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV` | 例行注意（`bridge.py` 已自动清洗） |
 
 ---
 
