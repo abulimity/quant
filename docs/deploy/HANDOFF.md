@@ -8,8 +8,9 @@
 
 ## 1. 一句话状态
 
-**P1（仓库骨架与环境隔离）已完成并通过 Gate P1（无豁免项）；下一步执行 P2（数据层）。**
-（更新时间：2026-09-29，P1 完成时）
+**P2（数据层）已完成并通过 Gate P2（无豁免项）；下一步执行 P3（契约层）。**
+（更新时间：2026-09-29，P2 完成时）
+（历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免）
 
 ---
 
@@ -40,6 +41,11 @@
 | 数据供应商 | **留空**，用合成夹具驱动全部验证 |
 | 网络 | 未验证数据接口可用性；**`raw.githubusercontent.com` 在本机不可达**（litellm 成本表拉取超时） |
 | **环境边界**（P1 定） | core（根）/ `envs/vbt` / `envs/x2`，**各自独立 `uv.lock`**；**backtrader 归 core**，未建 `envs/btrader` |
+| **打包**（P2 定） | 根项目改为 **`uv_build` 可编辑安装**（`[build-system]` + `module-root="src"`），故 `import quantlab` 可用；CLI 入口 `quantlab = quantlab.cli:main`。`uv.lock` 仅 1 行变化，**依赖零漂移** |
+| **测试栈**（P2 定） | **`unittest`**（全库统一，CLAUDE.md 二选一）。命令：`python -m unittest discover -t . -s tests` |
+| **夹具快照** | `data/bronze/synthetic/synth-v1-613c5986a898/`（gitignored，可确定性重建）；DuckDB 台账 `data/warehouse.duckdb`（**派生**，可重建） |
+| ⚠️ **DuckDB 并发**（P2 实测） | ① 写者对**其他进程**独占：写者持有时连**只读**也打不开 → 「单写多读」仅在**无活跃写者**时成立；② **同进程**内对同一库文件**不得**持有配置不同的连接（RO/RW）→ 用连接注入 |
+| ⚠️ **跑测试前** | 设 `PYTHONIOENCODING=utf-8`（否则中文断言信息在子进程里会 UnicodeDecodeError） |
 | 三环境 Python | 均 **3.12.13**（起点即通过，无需下调） |
 | ⚠️ 外来环境变量 | 手工跑 uv 前**必须**清除 `UV_PROJECT_ENVIRONMENT` 与 `VIRTUAL_ENV`（外部工具「Agents Anywhere」注入，会把环境建到错误位置）；`src/quantlab/engines/bridge.py` 已自动清洗 |
 | x2strategy 导入名 | 发行名 `x2strategy`，但**可导入模块是 `paper2spec` / `spec2code`**（**没有** `x2strategy` 模块） |
@@ -81,19 +87,32 @@
 
 ---
 
-## 6. 下一步：P2（照 `LOCAL_DEPLOYMENT_PLAN.md` 执行，勿凭记忆）
+## 5.1 已完成（P2 · 数据层）
+
+| 步骤 | 结果 |
+| --- | --- |
+| P2.1 | `store/schema.sql` + `migrate.py`（幂等、漂移检测）+ `db.py` + `snapshot_guard.py`；9 表；5/5 事实表含 `available_utc`+`snapshot_id`；`v_bars_latest` 单快照视图 |
+| P2.2 | `fixtures/spec.py` + `synth.py`：**9 标的 / 7 表 / 18941 根 bar**；内嵌分红·拆分·停牌·退市·晚上市·汇率·**下载失败**；解析净值与重算 `max\|Δ\|≈6e-15`；跨进程哈希一致 |
+| P2.3 | `store/warehouse.py` 两条 Parquet→DuckDB 路径；只读拒写、第二个写进程被拒、`read_parquet` 视图可用 |
+| P2.4 | `Source` 协议 + `akshare`/`yfinance`/`macro_fred` 三个骨架；**延迟导入**实测（导入后 SDK 不在 `sys.modules`）；未实现入口抛 `VENDOR-TBD` |
+| P2.5 | `ingest/orchestrator.py` + `cli.py`：**原子替换、幂等、中断可恢复**；`ingest_runs` 三态 `running→ok\|aborted` |
+| P2.6 | `quality/clean.py` + `checks.py`：8 类缺陷逐条可捕获；**三态互异**；复权/汇率手算吻合；gold 回测视图 |
+| **自动化** | **143 tests OK**（`python -m unittest discover -t . -s tests`） |
+| 🚦 | **Gate P2 通过（无豁免项）** |
+
+> 全部证据见 `docs/deploy/EVIDENCE.md` §P2。**无证据的步骤视为未完成。**
+
+---
+
+## 6. 下一步：P3（照 `LOCAL_DEPLOYMENT_PLAN.md` 执行，勿凭记忆）
 
 | 步骤 | 要点 |
 | --- | --- |
-| P2.1 | 数据契约 DDL（`symbols/bars_daily/corporate_actions/fx_rates/trading_calendar/macro_series/fundamentals/ingest_runs`）；幂等 + 主键约束生效 |
-| P2.2 | **合成夹具（本阶段核心，先于任何适配器）**：固定种子，内嵌分红/拆分/停牌/退市/晚上市/汇率/已知 buy&hold 答案 |
-| P2.3 | DuckDB 只读约定：研究侧 `read_only=True`；**只读连接执行写必须报错**（负向测试） |
-| P2.4 | `Source` 协议 + 空骨架适配器；未实现入口抛明确的 `NotImplementedError("VENDOR-TBD")` |
-| P2.5 | Ingest 编排 + 快照：临时文件 → 原子替换；中断可恢复、幂等、旧快照不可覆盖 |
-| P2.6 | Silver / Gold 清洗与质量校验；**每种注入缺陷都要被捕获**；休市/停牌/失败三态可区分 |
-| 🚦 | **Gate P2**：契约 / 夹具 / 存储 / 适配器 / 快照 / 质量 全部满足 |
+| P3.1 | 契约类型：`Signals` / `TargetWeights` / `StrategySpec` / `CostModel` |
+| P3.2 | 校验器**拒绝非法值**：行和 > 1、负权重、含未来日期 |
+| P3.3 | 未来扰动测试：改未来数据**不得**改变过去信号 |
 
-> P2 的逐条验证项与失败处理**以手册 §P2 为准**，本表仅为导航。P2 专属风险与通用故障处置见手册 §P2 各步「失败处理」与**附录 C**。
+> P3 的逐条验证项与失败处理**以手册 §P3 为准**，本表仅为导航。
 
 ---
 
@@ -108,6 +127,9 @@
 | 5 | `envs/vbt` 的 `plotly<7` 上界（现 6.9.0） | **已人工裁决**；待 vectorbt 上游适配 plotly 7 后可解除 |
 | 6 | `litellm.__version__` 不存在 | P5 改用 `importlib.metadata.version("litellm")` |
 | 7 | 手工跑 uv 前须清 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV` | 例行注意（`bridge.py` 已自动清洗） |
+| 8 | **P2 对手册 DDL 的 3 处偏离**：① `ingest_runs` 主键 → `(snapshot_id, dataset)`；② `corporate_actions` 增 `available_utc`；③ `fundamentals` 增 `available_utc` | **待你确认**（理由见 `EVIDENCE.md` §P2.1 / §P2.5）；如不认可请指示回改 |
+| 9 | 质量阈值 `JUMP_SIGMA=8` / `JUMP_FLOOR=0.15` / `FX_STALE_DAYS=10` | 首次设定，**未用真实数据校准**；接入供应商后应重新标定 |
+| 10 | P2 全部改动**尚未 git 提交** | 待你确认后提交（本次未收到提交指令） |
 
 ---
 

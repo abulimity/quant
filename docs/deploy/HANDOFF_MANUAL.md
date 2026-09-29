@@ -4,7 +4,7 @@
 > **与 `HANDOFF.md` 的分工**：`HANDOFF.md` 是**一屏进度快照**（知道"到哪了"）；本文件是**完整交接手册**（知道"怎么接、坑在哪"）。
 > **与 `CLAUDE.md` 的分工**：`CLAUDE.md` 是**长期约定**（每个会话都适用）；本文件是**当前进度 + 操作入口**（每完成一个 Phase 更新一次）。
 > **与 `LOCAL_DEPLOYMENT_PLAN.md` 的分工**：手册是**唯一权威执行文档**；本文件**只做导航，不复制步骤**。
-> 最后更新：2026-09-29（P1 完成时）
+> 最后更新：2026-09-29（**P2 完成时**）
 
 ---
 
@@ -12,10 +12,11 @@
 
 - **项目**：本地量化研究平台（Windows 11）。四引擎 = **x2strategy + bt + backtrader + vectorbt**，DuckDB 存历史数据。
 - **位置**：`D:\project\quant`
-- **当前进度**：**P0 ✅、P1 ✅**；**下一步 = P2（数据层）**。
-- **数据供应商留空**，全部验证用 `src/quantlab/fixtures` 的**合成夹具**驱动（P2 才写）。
+- **当前进度**：**P0 ✅、P1 ✅、P2 ✅**；**下一步 = P3（契约层）**。
+- **数据供应商留空**，全部验证用 `src/quantlab/fixtures` 的**合成夹具**驱动（**P2 已写入**）。
 - **三个环境已就绪**：core（根）/ `envs/vbt` / `envs/x2`，各自独立 `uv.lock`，探针全绿。
-- **接续工作的第一步**：读 `LOCAL_DEPLOYMENT_PLAN.md` 的 **§P2**，逐条照做、逐步留证。
+- **一键验收**：`python -m unittest discover -t . -s tests` → **143 tests OK**。
+- **接续工作的第一步**：读 `LOCAL_DEPLOYMENT_PLAN.md` 的 **§P3**，逐条照做、逐步留证。
 
 ---
 
@@ -62,30 +63,35 @@ P0 环境地基 → P1 仓库骨架与环境隔离 → P2 数据层 → P3 契�
 上层依赖下层；**下层不稳，上层的验证结论无意义**。每 Phase 末尾有 Gate，**不过不得进入下一 Phase**。
 > 关键：**先做数据层合成夹具（P2.2），再做引擎适配（P4）** —— 否则三引擎对拍无从验证。
 
-### 2.3 当前目录结构（P1 结束时）
+### 2.3 当前目录结构（**P2 结束时**）
 
 ```text
 D:\project\quant\
-  pyproject.toml  uv.lock  .python-version      # core 环境（根）
-  CLAUDE.md  LOCAL_DEPLOYMENT_PLAN.md
-  .gitignore
+  pyproject.toml  uv.lock  .python-version      # core 环境（uv_build 可编辑安装）
+  CLAUDE.md  LOCAL_DEPLOYMENT_PLAN.md  .gitignore
   config\sources.yaml                            # 供应商配置（空模板，待人工填）
   docs\archive\OPEN_SOURCE_COMPARISON.md         # 归档，勿读
-  docs\deploy\EVIDENCE.md                        # 证据台账（每步追加）
-  docs\deploy\HANDOFF.md                         # 一屏进度快照
-  docs\deploy\HANDOFF_MANUAL.md                  # 本文件
-  envs\
-    vbt\ { pyproject.toml, uv.lock, .python-version, probe.py, entry.py }   # vectorbt 隔离环境
-    x2\  { pyproject.toml, uv.lock, .python-version, probe.py, entry.py }   # x2strategy + litellm
+  docs\deploy\{EVIDENCE.md, HANDOFF.md, HANDOFF_MANUAL.md}
+  envs\vbt\ { pyproject.toml, uv.lock, probe.py, entry.py }   # vectorbt 隔离环境
+  envs\x2\  { pyproject.toml, uv.lock, probe.py, entry.py }   # x2strategy + litellm
   src\quantlab\
-    probe.py                                     # core 探针
+    __init__.py  probe.py  cli.py                # cli: `quantlab ingest` / `quantlab schema`
     engines\bridge.py                            # 跨环境桥（core 侧）
-  data\  { bronze\, silver\, gold\, warehouse.duckdb }   # 尚未填充（P2）
-  runs\                                          # 运行产物（gitignored）
-  tests\                                         # 尚未编写（P2 起）
+    store\   { schema.sql, migrate.py, db.py, snapshot_guard.py,
+               warehouse.py, atomic.py, canonical.py }          # ← P2 新增
+    fixtures\{ spec.py, synth.py }                                # ← P2 新增（合成夹具）
+    ingest\  { base.py, orchestrator.py, adapters\{akshare,yfinance,macro_fred,synthetic,_util}.py }
+    quality\ { clean.py, checks.py }                              # ← P2 新增（Silver/Gold + 校验）
+  data\  bronze\synthetic\<snapshot_id>\*.parquet   # 夹具快照（gitignored，可重建）
+         silver\ gold\                              # P2 已产出 gold **视图**（尚未落盘）
+         warehouse.duckdb                           # DuckDB 台账（派生，可重建）
+  runs\                                            # 运行产物（gitignored）
+  tests\  { __init__.py, helpers.py,
+            test_p2_1_contract.py, test_p2_2_fixtures.py, test_p2_3_store.py,
+            test_p2_4_adapters.py, test_p2_5_ingest.py, test_p2_6_quality.py }
 ```
 
-> P2–P6 将新增 `src/quantlab/{fixtures,store,ingest,contract,engines,portfolio,eval,registry}` 与 `cli.py`；届时目录约定见手册 §3.3。
+> P3–P6 还将新增 `src/quantlab/{contract,portfolio,eval,registry}`；届时目录约定见手册 §3.3。
 
 ---
 
@@ -134,10 +140,18 @@ core                    → 读 result.json 继续；失败抛 BridgeError（非
 | 8 | backtrader 导入打印 `SyntaxWarning: invalid escape sequence '\*'` | 出现在 **stderr** | **无害**，不影响导入与退出码，无需处理 |
 | 9 | numba 首次调用慢 | vectorbt 首次 JIT 编译耗时 | **正常**，勿判为卡死；给足超时 |
 | 10 | `uv` 提示 `Failed to hardlink files; falling back to full copy` | 缓存(C盘)与项目(D盘)跨文件系统 | **无害**，仅速度提示 |
+| 11 | **DuckDB 写者对其它进程独占** | 写者持有时**连只读也打不开**（`IOException: 另一个程序正在使用此文件`）。故「单写多读」**仅在无活跃写者时成立** | 这正是「Parquet 是真相、DuckDB 是查询层」的理由：ingest 写 Parquet，查询层在**无写者**时读。**不要**靠重试掩盖 |
+| 12 | **同进程内不得对同一库文件持有配置不同的连接** | RO 与 RW 混用 → `ConnectionException: Can't open a connection to same database file with a different configuration` | 传 `con=` 复用同一连接（`orchestrator` 已支持连接注入）；测试里读台账也要用**同配置**连接 |
+| 13 | 测试含中文断言信息，子进程输出按本地编码 | Windows 上 `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc1` | 跑测试前设 `PYTHONIOENCODING=utf-8`（`EVIDENCE.md` 的命令已固定该设置） |
+| 14 | `Series` 没有 `.date`（只有 `.dt.date`），`DatetimeIndex` 才有 | `AttributeError: 'Series' object has no attribute 'date'` | 统一转成 `DatetimeIndex` 再用 `index.date` |
+| 15 | 公司行动除权日若**不在**交易日网格上会被**静默丢弃** | 「已知答案」变成假证据 | 生成器已 **fail-closed**：除权日必须唯一命中交易日，否则报错 |
+| 16 | 汇率归一在同 ts 双方向时会**折叠成重复行** | 凭空复制一份汇率且不报错 | 已 **fail-closed**：检测到撞车即抛 `FxDirectionError` |
+| 17 | `uv fsync` 对**只读**句柄在 Windows 上失败 | `OSError: [Errno 9] Bad file descriptor` | 用 `open(tmp, "rb+")`（可写句柄）再 `fsync` |
+| 18 | 拆分复权乘法因子**极易写反** | 前复权错写成 `F[-1]/F[t]` → 除权前价格被放大 → 假跳空 | 代码内以 4:1 的具体数字锚定方向；测试断言 `raw_ratio/adj_ratio == ratio` |
 
 ---
 
-## 5. 已完成（P0 / P1）与 Gate 结论
+## 5. 已完成（P0 / P1 / P2）与 Gate 结论
 
 ### P0 环境地基 — 🚦 **通过（含 1 项显式豁免）**
 
@@ -166,6 +180,32 @@ cb73878  docs(deploy): record P1 evidence and Gate P1 verdict; update handoff
 ```
 
 > **全部证据**（每条命令 + 实际输出 + 逐项判定）见 `docs/deploy/EVIDENCE.md`。**无证据的步骤视为未完成。**
+
+### P2 数据层 — 🚦 **通过（无豁免项）**
+
+| 步骤 | 结果 |
+| --- | --- |
+| P2.0 | 根项目改为 `uv_build` 可编辑安装（否则 `import quantlab` 不可用，`tests/` 与 CLI 都跑不起来）；`uv.lock` **仅 1 行变化**，依赖零漂移 |
+| P2.1 | `store/`：`schema.sql`（9 表，幂等）、`migrate.py`（含漂移检测）、`db.py`、`snapshot_guard.py`（防快照叠加哨兵）；5/5 事实表含 `available_utc`+`snapshot_id` |
+| P2.2 | `fixtures/spec.py` + `synth.py`：**9 标的 / 7 表 / 18941 根 bar**；内嵌分红·拆分·停牌·退市·晚上市·汇率·**下载失败**；解析净值 vs 重算 `max\|Δ\|≈6e-15`；跨进程哈希一致 |
+| P2.3 | `store/warehouse.py`：零拷贝视图 + 物化装载；只读拒写且**数据未变**；第二个写进程被拒并获得可操作报错 |
+| P2.4 | `ingest/base.py` + 三个骨架适配器；**延迟导入实测**（导入后 SDK 不在 `sys.modules`）；未实现入口抛 `VENDOR-TBD` |
+| P2.5 | `ingest/orchestrator.py` + `cli.py`：原子替换、幂等、**硬杀可恢复**；`ingest_runs` 三态 `running→ok\|aborted` |
+| P2.6 | `quality/`：8 类注入缺陷逐条被捕获；**三态互异**；复权/汇率手算吻合；gold 回测输入视图 |
+| 自动化 | **143 tests OK**（`python -m unittest discover -t . -s tests`） |
+
+**Git 提交**
+
+```text
+40de546  chore: initial docs and skeleton
+f7cfdb6  chore(p1): core/vbt/x2 isolated envs, probes, cross-env bridge
+cb73878  docs(deploy): record P1 evidence and Gate P1 verdict; update handoff
+3ebe386  docs(deploy): add expanded handoff manual (keep HANDOFF.md as progress snapshot)
+（P2 改动**尚未提交** —— 本次未收到提交指令）
+```
+
+> **P2 对手册 DDL 有 3 处偏离**（`ingest_runs` 主键、`corporate_actions`/`fundamentals` 增
+> `available_utc`），理由与可回退说明见 `EVIDENCE.md` §P2.1 / §P2.5，**待人工确认**。
 
 ---
 
@@ -203,6 +243,15 @@ uv run --project envs/x2  python envs/x2/probe.py        # x2
 # —— 跨环境桥自检（成功 + 失败传播 + 锁哈希）——
 uv run python src/quantlab/engines/bridge.py             # 期望末行 SELFTEST OK
 
+# —— 全量验收（P2 起；必须先设编码，否则中文断言信息会 UnicodeDecodeError）——
+$env:PYTHONIOENCODING='utf-8'
+.\.venv\Scripts\python.exe -m unittest discover -t . -s tests        # 期望：Ran 143 tests OK
+
+# —— 数据层（P2）——
+.\.venv\Scripts\python.exe -m quantlab.fixtures.synth --out data/bronze/synthetic   # 生成夹具快照
+.\.venv\Scripts\python.exe -m quantlab.cli ingest --source synthetic --universe fixture
+.\.venv\Scripts\python.exe -m quantlab.cli schema --print          # 人工核对契约 DDL
+
 # —— 重建环境（幂等）——
 uv sync --locked
 uv sync --locked --project envs/vbt
@@ -221,25 +270,27 @@ uv run jupyter lab --ServerApp.ip=127.0.0.1 --ServerApp.port=8888 --ServerApp.op
 
 ---
 
-## 8. 下一步：P2 · 数据层
+## 8. 下一步：P3 · 契约层
 
-**前置：Gate P1 已通过 ✅。** 逐条步骤**以 `LOCAL_DEPLOYMENT_PLAN.md` §P2 为准**，下表仅导航：
+**前置：Gate P2 已通过 ✅。** 逐条步骤**以 `LOCAL_DEPLOYMENT_PLAN.md` §P3 为准**，下表仅导航：
 
 | 步骤 | 要点 |
 | --- | --- |
-| P2.1 | 数据契约 DDL（`symbols / bars_daily / corporate_actions / fx_rates / trading_calendar / macro_series / fundamentals / ingest_runs`）；幂等 + 主键约束生效 |
-| P2.2 | **合成夹具（本阶段核心，先于任何适配器）**：固定种子；内嵌分红/拆分/停牌/退市/晚上市/汇率/已知 buy&hold 解析答案 |
-| P2.3 | DuckDB 只读约定：研究侧 `read_only=True`；**只读连接执行写必须报错**（负向测试） |
-| P2.4 | `Source` 协议 + 空骨架适配器；未实现入口抛**明确的** `NotImplementedError("VENDOR-TBD")` |
-| P2.5 | Ingest 编排 + 快照：临时文件 → 原子替换；中断可恢复、幂等、**旧快照不可覆盖** |
-| P2.6 | Silver / Gold 清洗与质量校验；**每种注入缺陷都要被捕获**；休市/停牌/下载失败**三态可区分** |
-| 🚦 | **Gate P2**：契约 / 夹具 / 存储 / 适配器 / 快照 / 质量 全部满足 |
+| P3.1 | 契约类型：`Signals` / `TargetWeights` / `StrategySpec` / `CostModel`；`StrategySpec` 可 JSON 往返 |
+| P3.2 | 校验器 **fail-closed**：拒绝行和 > 1、拒绝负权重（只做多默认）、拒绝含未来日期 |
+| P3.3 | **未来扰动测试**：修改信号时刻**之后**的数据，不得改变此前已产生的信号与订单 |
 
-**P2 的常见坑**（详见手册 P2 各步「失败处理」与**附录 C**）：
+**P2 已交付、P3 可直接复用的东西**：
 
-- 夹具哈希不稳 → 断言对象是**规范化后的数据内容**（排序→固定 dtype→逐行哈希），**不是 Parquet 字节哈希**。
-- 只读/锁冲突 → 确认写入只发生在 ingest 进程；**不要靠重试掩盖**。
-- 质量校验误报 → 先判是阈值问题还是数据问题，**不得放宽容忍掩盖真实缺陷**。
+- `quantlab.fixtures.synth.generate()` —— 确定性夹具（含已知答案），P3 的扰动测试用它最方便
+- `quantlab.store.snapshot_guard.assert_single_snapshot()` —— 防快照叠加哨兵
+- `quantlab.quality.clean.gold_backtest_view()` —— 已带 `traded` 掩码与 `available_utc` 的回测输入
+- 测试基座：`python -m unittest discover -t . -s tests`（**记得先设 `PYTHONIOENCODING=utf-8`**）
+
+**P3 的常见坑**：
+
+- 未来函数是最隐蔽的返工源 → 判据是**行为**（改未来不动过去），不是「有没有写 `shift(1)`」。
+- 契约校验要在**入口**就 fail-closed，别留给下游去猜。
 
 ---
 
@@ -254,6 +305,10 @@ uv run jupyter lab --ServerApp.ip=127.0.0.1 --ServerApp.port=8888 --ServerApp.op
 | 5 | `envs/vbt` 的 `plotly<7` 上界 | **已人工裁决**；待 vectorbt 上游适配 plotly 7 后解除 |
 | 6 | 每组件的许可确认（vectorbt / backtrader / DuckDB） | 附录 D-1~3，执行前逐条确认 |
 | 7 | 夹具驱动验收的取舍是否认可 | 附录 D-6 |
+| 8 | **P2 对手册 DDL 的 3 处偏离**：① `ingest_runs` 主键 → `(snapshot_id, dataset)`；② `corporate_actions` 增 `available_utc`；③ `fundamentals` 增 `available_utc` | **待确认**（理由见 `EVIDENCE.md` §P2.1/§P2.5）。如不认可请指示回改 |
+| 9 | 质量阈值 `JUMP_SIGMA=8` / `JUMP_FLOOR=0.15` / `FX_STALE_DAYS=10` | 首次设定，**未用真实数据校准**；接入供应商后应重新标定 |
+| 10 | **P2 全部改动尚未 git 提交** | 待你确认后提交（本次未收到提交指令） |
+| 11 | 夹具的"可用时间缓冲"（交易所收盘 + 15~30 分钟）是**声明假设** | F.2 要求披露：**不是**严格 point-in-time | 报告须标注；接入真实供应商后替换为真实发布时刻 |
 
 ---
 
