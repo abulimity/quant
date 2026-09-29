@@ -1,0 +1,51 @@
+# 数据源配置 —— 本次留空，待人工填写（见 LOCAL_DEPLOYMENT_PLAN.md 附录 A）
+#
+# 约定：
+#   1. 凭据一律写「环境变量名」，绝不写明文密钥。
+#   2. 每接入一个源，必须补一组 P2.4 的 normalize 契约测试与 F.3 的使用前检查。
+#   3. enabled: false 的源不会被 ingest 使用；未实现的源调用时抛 NotImplementedError。
+
+sources:
+  cn_etf:
+    provider: ""            # 例：akshare
+    enabled: false
+    datasets: [daily_bars, corporate_actions]
+    credentials_env: ""     # 例：AKSHARE_TOKEN
+    calendar: XSHG
+    notes: "境内 ETF 主入口；逐接口固定契约与快照"
+
+  hk_etf:
+    provider: ""            # 例：yfinance
+    enabled: false
+    datasets: [daily_bars]
+    credentials_env: ""
+    calendar: XHKG
+    notes: "需核验代码映射、上市币种、不同币种柜台"
+
+  us_etf:
+    provider: ""            # 例：yfinance
+    enabled: false
+    datasets: [daily_bars, corporate_actions]
+    credentials_env: ""
+    calendar: XNYS
+    notes: "需核验退市与改代码、分红拆分、复权含义"
+
+  fx:
+    provider: ""
+    enabled: false
+    datasets: [daily_fx]
+    credentials_env: ""
+    notes: "内部统一：1 单位原币 = 多少基准货币；支持多基准并存，默认 CNY"
+
+  macro:
+    provider: ""            # 例：fred
+    enabled: false
+    datasets: [macro_series]
+    credentials_env: ""
+    notes: "宏观为一等数据，与行情同级维护"
+
+  llm:
+    provider: ""            # 例：openai / anthropic / ollama
+    enabled: false
+    credentials_env: ""
+    notes: "供 x2strategy 使用；本地 ollama 可不需凭据"
