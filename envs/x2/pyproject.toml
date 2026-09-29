@@ -1,0 +1,16 @@
+[project]
+name = "x2"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.5.5",
+    "litellm>=1.102.0",
+    "x2strategy",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true
+
+[tool.uv.sources]
+x2strategy = { git = "https://github.com/ALAGENT-HKU/x2strategy" }
