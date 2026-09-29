@@ -1,0 +1,35 @@
+# LLM 通道配置（LOCAL_DEPLOYMENT_PLAN.md §P5.1）
+#
+# ⚠️ **本文件绝不写凭据。** 这里只写「去读哪个环境变量」，
+#    key 的值一律由环境变量提供（CLAUDE.md：凭据一律走环境变量，不得写入仓库）。
+#
+# 填好后可用下面这条自检（**不会打印 key 的值**）：
+#     .\.venv\Scripts\python.exe -m quantlab.x2.llm --check
+#
+# 未配置时，调用会**明确报错并说明如何配置**，绝不静默使用付费默认值（§P5.1 V1）。
+
+[provider]
+# 后端类型："" （未配置）/ "cloud"（云端 API）/ "ollama"（本地离线）
+kind = ""
+
+# provider 名，例如 "anthropic" / "openai"。
+# litellm 的模型串前缀即来自这里（如 anthropic/claude-sonnet-4-5）。
+name = ""
+
+# 模型 id，例如 "claude-sonnet-4-5"。
+model = ""
+
+# **环境变量名**（不是值）。加载器会去 os.environ 里取。
+api_key_env = ""
+
+# 可选：自定义 base url 的**环境变量名**（走代理/自建网关时用）。
+api_base_env = ""
+
+# 可选：请求超时（秒）
+timeout_s = 120
+
+
+[ollama]
+# 走本地 Ollama 时的地址（离线/隐私场景；§P5.1 的失败处理路径）。
+# 无 key 时可用它把链路先打通，不阻塞 P5 其余步骤。
+base_url = "http://127.0.0.1:11434"
