@@ -4,7 +4,7 @@
 > **与 `HANDOFF.md` 的分工**：`HANDOFF.md` 是**一屏进度快照**（知道"到哪了"）；本文件是**完整交接手册**（知道"怎么接、坑在哪"）。
 > **与 `CLAUDE.md` 的分工**：`CLAUDE.md` 是**长期约定**（每个会话都适用）；本文件是**当前进度 + 操作入口**（每完成一个 Phase 更新一次）。
 > **与 `LOCAL_DEPLOYMENT_PLAN.md` 的分工**：手册是**唯一权威执行文档**；本文件**只做导航，不复制步骤**。
-> 最后更新：2026-09-29（**P2 完成时**）
+> 最后更新：2026-09-29（**P3 完成时**）
 
 ---
 
@@ -12,11 +12,11 @@
 
 - **项目**：本地量化研究平台（Windows 11）。四引擎 = **x2strategy + bt + backtrader + vectorbt**，DuckDB 存历史数据。
 - **位置**：`D:\project\quant`
-- **当前进度**：**P0 ✅、P1 ✅、P2 ✅**；**下一步 = P3（契约层）**。
-- **数据供应商留空**，全部验证用 `src/quantlab/fixtures` 的**合成夹具**驱动（**P2 已写入**）。
+- **当前进度**：**P0 ✅、P1 ✅、P2 ✅、P3 ✅**；**下一步 = P4（引擎适配层）**。
+- **数据供应商留空**，全部验证用 `src/quantlab/fixtures` 的**合成夹具**驱动（P2 已写入）。
 - **三个环境已就绪**：core（根）/ `envs/vbt` / `envs/x2`，各自独立 `uv.lock`，探针全绿。
-- **一键验收**：`python -m unittest discover -t . -s tests` → **143 tests OK**。
-- **接续工作的第一步**：读 `LOCAL_DEPLOYMENT_PLAN.md` 的 **§P3**，逐条照做、逐步留证。
+- **一键验收**：`python -m unittest discover -t . -s tests` → **213 tests OK**。
+- **接续工作的第一步**：读 `LOCAL_DEPLOYMENT_PLAN.md` 的 **§P4**，逐条照做、逐步留证。
 
 ---
 
@@ -82,13 +82,15 @@ D:\project\quant\
     fixtures\{ spec.py, synth.py }                                # ← P2 新增（合成夹具）
     ingest\  { base.py, orchestrator.py, adapters\{akshare,yfinance,macro_fred,synthetic,_util}.py }
     quality\ { clean.py, checks.py }                              # ← P2 新增（Silver/Gold + 校验）
+    contract\{ types.py, lint.py, emit.py }                       # ← P3 新增（契约 + 闸门 + 发射器）
   data\  bronze\synthetic\<snapshot_id>\*.parquet   # 夹具快照（gitignored，可重建）
          silver\ gold\                              # P2 已产出 gold **视图**（尚未落盘）
          warehouse.duckdb                           # DuckDB 台账（派生，可重建）
   runs\                                            # 运行产物（gitignored）
   tests\  { __init__.py, helpers.py,
             test_p2_1_contract.py, test_p2_2_fixtures.py, test_p2_3_store.py,
-            test_p2_4_adapters.py, test_p2_5_ingest.py, test_p2_6_quality.py }
+            test_p2_4_adapters.py, test_p2_5_ingest.py, test_p2_6_quality.py,
+            test_p3_contract.py }
 ```
 
 > P3–P6 还将新增 `src/quantlab/{contract,portfolio,eval,registry}`；届时目录约定见手册 §3.3。
@@ -148,6 +150,10 @@ core                    → 读 result.json 继续；失败抛 BridgeError（非
 | 16 | 汇率归一在同 ts 双方向时会**折叠成重复行** | 凭空复制一份汇率且不报错 | 已 **fail-closed**：检测到撞车即抛 `FxDirectionError` |
 | 17 | `uv fsync` 对**只读**句柄在 Windows 上失败 | `OSError: [Errno 9] Bad file descriptor` | 用 `open(tmp, "rb+")`（可写句柄）再 `fsync` |
 | 18 | 拆分复权乘法因子**极易写反** | 前复权错写成 `F[-1]/F[t]` → 除权前价格被放大 → 假跳空 | 代码内以 4:1 的具体数字锚定方向；测试断言 `raw_ratio/adj_ratio == ratio` |
+| 19 | **信号是事件，持仓是状态** —— 二者混淆是**静默**的 | 若要求「调仓日当天恰好 +1」，周中金叉被整条丢掉 → 事件型策略**永远空仓**：收益恒 0、不报错、不崩溃 | 先过 `emit.position_state()` 归约（`+1` 建仓 / `−1` 平仓 / `0`·`NaN` **维持前值**），再取调仓日；已单列用例钉住 |
+| 20 | 手算基准用 `~above.shift(1).fillna(False)` 会凭空造出**幻影穿越** | 把「前一日状态未知」当成「前一日在下方」，首个可评估日多出一次穿越 | 改用 `fast.shift(1) <= slow.shift(1)`（NaN 参与比较恒为 False） |
+| 21 | 「每周调仓」**不等于**「间隔恰好 7 天」 | 周一休市则决策顺延到周二 → 相邻两次可只隔 6 天；按 `gap >= 7` 断言会误报 | 正确判据是「每个自然周至多一次」（`isocalendar` 去重） |
+| 22 | 闸门规则要能**递归**遍历 `Expr` 树 | `shift` 若在深层嵌套里，只查顶层会漏判未来函数 | `Expr.walk()` 深度优先；用例专门覆盖「深层嵌套的 shift 仍生效」与「`shift(0)` 不算解除」 |
 
 ---
 
@@ -181,6 +187,23 @@ cb73878  docs(deploy): record P1 evidence and Gate P1 verdict; update handoff
 
 > **全部证据**（每条命令 + 实际输出 + 逐项判定）见 `docs/deploy/EVIDENCE.md`。**无证据的步骤视为未完成。**
 
+### P3 契约层 — 🚦 **通过（无豁免项）**
+
+| 步骤 | 结果 |
+| --- | --- |
+| P3.1 | `contract/types.py`：**显式 `Expr` 树**（非字符串 —— 否则闸门只能靠正则猜，会漏）→ `StrategySpec` JSON 往返逐字段一致；三个校验器逐条拒绝非法值 |
+| P3.2 | `contract/lint.py`：8 条规则 `G1`–`G8` **fail-closed**；含未来函数规格被拒；未上市标的被拒；**x2 来源在规则未接通时默认阻断**；`origin` 写入 run 元数据可审计 |
+| P3.3 | `contract/emit.py`：与手算逐格一致；**未来扰动 ×3 后此前 251 行信号与权重逐格不变**；`emit_weights` 行和/调仓日/持现金/稳定排序全部正确 |
+| 自动化 | **213 tests OK**（143 P2 + 70 P3） |
+
+> ⚠️ **P3 最有价值的发现**：**信号是事件、持仓是状态**。原实现要求调仓日当天恰好 `+1`，
+> 于是周中金叉被整条丢掉 → 事件型策略**永远空仓**（收益恒 0、不报错、不崩溃）。
+> 已加 `position_state()` 归约并单列用例钉住。详见 `EVIDENCE.md` §P3。
+
+> **闸门新规则（手册未逐条枚举，已留证）**：`G7 cost_model_declared`（成本须**显式**选定，
+> 裸默认 = 全 0 = 回测偏乐观）、`G8 symbols_listed`（决策时点必须已上市，
+> `listing_dates`/`as_of` 由调用方注入，契约层不依赖数据源）。
+
 ### P2 数据层 — 🚦 **通过（无豁免项）**
 
 | 步骤 | 结果 |
@@ -201,7 +224,8 @@ cb73878  docs(deploy): record P1 evidence and Gate P1 verdict; update handoff
 f7cfdb6  chore(p1): core/vbt/x2 isolated envs, probes, cross-env bridge
 cb73878  docs(deploy): record P1 evidence and Gate P1 verdict; update handoff
 3ebe386  docs(deploy): add expanded handoff manual (keep HANDOFF.md as progress snapshot)
-（P2 改动**尚未提交** —— 本次未收到提交指令）
+1df2d4a  feat(p2): 数据层 —— 契约 DDL、合成夹具、存储、适配器骨架、快照编排、质量校验
+（P3 改动**尚未提交** —— 待确认）
 ```
 
 > **P2 对手册 DDL 有 3 处偏离**（`ingest_runs` 主键、`corporate_actions`/`fundamentals` 增
@@ -245,7 +269,7 @@ uv run python src/quantlab/engines/bridge.py             # 期望末行 SELFTEST
 
 # —— 全量验收（P2 起；必须先设编码，否则中文断言信息会 UnicodeDecodeError）——
 $env:PYTHONIOENCODING='utf-8'
-.\.venv\Scripts\python.exe -m unittest discover -t . -s tests        # 期望：Ran 143 tests OK
+.\.venv\Scripts\python.exe -m unittest discover -t . -s tests        # 期望：Ran 213 tests OK
 
 # —— 数据层（P2）——
 .\.venv\Scripts\python.exe -m quantlab.fixtures.synth --out data/bronze/synthetic   # 生成夹具快照
@@ -270,27 +294,31 @@ uv run jupyter lab --ServerApp.ip=127.0.0.1 --ServerApp.port=8888 --ServerApp.op
 
 ---
 
-## 8. 下一步：P3 · 契约层
+## 8. 下一步：P4 · 引擎适配层
 
-**前置：Gate P2 已通过 ✅。** 逐条步骤**以 `LOCAL_DEPLOYMENT_PLAN.md` §P3 为准**，下表仅导航：
+**前置：Gate P3 已通过 ✅。** 逐条步骤**以 `LOCAL_DEPLOYMENT_PLAN.md` §P4 为准**，下表仅导航：
 
 | 步骤 | 要点 |
 | --- | --- |
-| P3.1 | 契约类型：`Signals` / `TargetWeights` / `StrategySpec` / `CostModel`；`StrategySpec` 可 JSON 往返 |
-| P3.2 | 校验器 **fail-closed**：拒绝行和 > 1、拒绝负权重（只做多默认）、拒绝含未来日期 |
-| P3.3 | **未来扰动测试**：修改信号时刻**之后**的数据，不得改变此前已产生的信号与订单 |
+| P4.x | 引擎适配：**backtrader 5 项** / **bt 4 项** / **vectorbt spawn 保护** |
+| P4.x | 对拍场景 **A/B/C** 在容差内一致；差异**已分类**（语义差异优先于放宽容差） |
+| 🚦 | **Gate P4** |
 
-**P2 已交付、P3 可直接复用的东西**：
+**P2/P3 已交付、P4 可直接复用的东西**：
 
-- `quantlab.fixtures.synth.generate()` —— 确定性夹具（含已知答案），P3 的扰动测试用它最方便
-- `quantlab.store.snapshot_guard.assert_single_snapshot()` —— 防快照叠加哨兵
-- `quantlab.quality.clean.gold_backtest_view()` —— 已带 `traded` 掩码与 `available_utc` 的回测输入
+- `contract.emit.emit_weights()` —— **金标准权重**，对拍的基准
+- `contract.types.validate_target_weights()` —— 对拍前的合法性门（行和 ≤ 1、非负）
+- `quantlab.quality.clean.gold_backtest_view()` —— 带 `traded` 掩码与 `available_utc` 的回测输入
+- `quantlab.store.db.connect()` / `warehouse.register_snapshot_views()` —— 只读查询 + 单快照视图
+- `quantlab.engines.bridge.run_in_env()` —— 跨环境桥（vectorbt / x2 隔离环境）
 - 测试基座：`python -m unittest discover -t . -s tests`（**记得先设 `PYTHONIOENCODING=utf-8`**）
 
-**P3 的常见坑**：
+**P4 的常见坑**：
 
-- 未来函数是最隐蔽的返工源 → 判据是**行为**（改未来不动过去），不是「有没有写 `shift(1)`」。
-- 契约校验要在**入口**就 fail-closed，别留给下游去猜。
+- 三引擎净值不一致 → **先查成交时点/信号延迟等语义差异**，不要直接放宽容差（附录 C）。
+- vectorbt 在 Windows 是 `spawn`，**必须**有 `if __name__ == "__main__":` 保护。
+- backtrader 导入会往 stderr 打 `SyntaxWarning`（无害，勿判为失败）。
+- 环境之间**只能**经 `job.json` + Parquet 走 subprocess，**不得互相 import**。
 
 ---
 
@@ -305,10 +333,12 @@ uv run jupyter lab --ServerApp.ip=127.0.0.1 --ServerApp.port=8888 --ServerApp.op
 | 5 | `envs/vbt` 的 `plotly<7` 上界 | **已人工裁决**；待 vectorbt 上游适配 plotly 7 后解除 |
 | 6 | 每组件的许可确认（vectorbt / backtrader / DuckDB） | 附录 D-1~3，执行前逐条确认 |
 | 7 | 夹具驱动验收的取舍是否认可 | 附录 D-6 |
-| 8 | **P2 对手册 DDL 的 3 处偏离**：① `ingest_runs` 主键 → `(snapshot_id, dataset)`；② `corporate_actions` 增 `available_utc`；③ `fundamentals` 增 `available_utc` | **待确认**（理由见 `EVIDENCE.md` §P2.1/§P2.5）。如不认可请指示回改 |
-| 9 | 质量阈值 `JUMP_SIGMA=8` / `JUMP_FLOOR=0.15` / `FX_STALE_DAYS=10` | 首次设定，**未用真实数据校准**；接入供应商后应重新标定 |
-| 10 | **P2 全部改动尚未 git 提交** | 待你确认后提交（本次未收到提交指令） |
-| 11 | 夹具的"可用时间缓冲"（交易所收盘 + 15~30 分钟）是**声明假设** | F.2 要求披露：**不是**严格 point-in-time | 报告须标注；接入真实供应商后替换为真实发布时刻 |
+| 8 | ~~P2 对手册 DDL 的 3 处偏离~~ | **已人工确认（2026-09-29）**，无需再议 |
+| 9 | 质量阈值 `JUMP_SIGMA=8` / `JUMP_FLOOR=0.15` / `FX_STALE_DAYS=10` | 手册未指定具体值，**属实现选择**；接入供应商后应重新标定（已授权） |
+| 10 | **P3 全部改动尚未 git 提交** | 待你确认后提交 |
+| 11 | 夹具的「可用时间缓冲」（交易所收盘 + 15~30 分钟）是**声明假设** | F.2 要求披露：**不是**严格 point-in-time | 报告须标注；接入真实供应商后替换为真实发布时刻 |
+| 12 | P3 闸门新增 `G7 cost_model_declared` 与 `G8 symbols_listed` | 手册 §P3.2 只列了通用规则四项，未逐条枚举 | 已在 `lint.py` 注明；`listing_dates`/`as_of` 由调用方**注入** |
+| 13 | `emit_weights` 默认 `momentum_window=63` | 手册未指定该参数 | 按 F.8「最近 63 个本地有效交易时段」取值 |
 
 ---
 
