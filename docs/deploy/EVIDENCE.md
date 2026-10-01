@@ -1672,3 +1672,48 @@ OK
 `src/quantlab/contract/__init__.py`；文档 `parity_report.md`（§4.5.1）、`HANDOFF.md`（§1、§7.5）。
 
 ---
+
+## P5.6 · 端到端验收（**进行中**，2026-10-02）
+
+**通道**：人工裁定用 **LLM 通道**（paper2spec 真实调云端，非离线夹具）。
+
+### 已完成
+
+| 步 | 结果 |
+| --- | --- |
+| 合成样例论文 | 新增 `papers/sample-momentum.md`（横截面动量轮动；合成载体，不依赖真实数据） |
+| **LLM 通道冒烟** | ✅ 经桥 → `envs/x2` 真实调用**成功**：`model=anthropic/claude-sonnet-4-5`，`source=text:sample-momentum.md`，返回信封 `{num_detected, paper_title, strategies:[…]}` |
+| **信封缺口**（发现并修） | 真实产出是**信封**（`strategies` 列表），而 `map_to_contract` 按「单策略字典」处理 → 会**静默映射成空 entry**。已加 `_unwrap_strategy`（取第 1 个，多策略**如实记录**） |
+| **静默全现金缺口**（发现并修） | ⚠️ **闸门曾放行 `entry=None` 的规格** —— 没有 entry → `emit_weights` 资格筛选恒空 → 权重恒 0 → 策略**永远空仓、收益恒 0、不报错**。已加闸门规则 **G9.entry_present**（fail-closed） |
+
+### ⏳ 阻塞：横截面算子无法表达（**待人工决策**）
+
+真实 paper2spec 产出的是**横截面**步骤：
+
+```json
+{"function": "rank", "scope": "cross_sectional",
+ "expression": "momentum_rank_63d = cross_sectional_rank(momentum_63d, ascending=False)"}
+```
+
+而本平台的 `Expr` 算子族是**时间序列**的（`sma/ema/momentum/gt/…`），**没有**
+`rank` / `cross_sectional_rank` / `condition` 这类横截面算子；横截面排名目前在
+`emit_weights` 里**隐式**实现（按动量排序取前 `top_n`），并未作为 `Expr` 暴露。
+
+后果：`map_to_contract` 对这份样例**映射不出 entry**（`unmapped` 有 1 项），
+`entry=None` → 新的 G9 **正确地拒掉**它（**不再**是静默全现金）。
+即：链路**停在闸门**，且**失败可见**。
+
+**这正是「不确定就停」要停的地方** —— 需要人工决定方向（见下）。
+
+### 自动化结果
+
+```text
+$ python -m unittest discover -t . -s tests
+Ran 335 tests in 184.759s
+OK
+```
+
+**新增/改动**：`papers/sample-momentum.md`；`src/quantlab/x2/paper2spec.py`（信封拆解）、
+`src/quantlab/contract/lint.py`（G9）；`tests/test_p5_paper2spec.py`（+3 用例）。
+
+---

@@ -191,6 +191,29 @@ def _parse_call(text: str, unmapped: list[str]) -> tuple[Expr | None, list[str]]
     return _build(mapped, node, unmapped)
 
 
+def _unwrap_strategy(raw: dict) -> tuple[dict, list[str]]:
+    """拆开 paper2spec 的**信封**。
+
+    实测（P5.6 真调云端）真实产出形如：
+
+        {"num_detected": 1, "paper_title": "...", "strategies": [ {…27 字段…} ]}
+
+    而不是单个策略字典。早先只按「单策略字典」处理，于是真实产出会被当成
+    「没有 logic_pipeline」→ **静默映射成空 entry**（所幸有测试断言兜住）。
+    这里把信封拆开：取第 1 个策略，多于 1 个时**如实记录**（不静默丢掉）。
+    """
+    strategies = raw.get("strategies")
+    if not isinstance(strategies, list) or not strategies:
+        return raw, []
+    first = strategies[0]
+    if not isinstance(first, dict):
+        return raw, [f"strategies[0] 不是映射类型: {type(first).__name__}"]
+    notes = ([] if len(strategies) == 1 else [
+        f"paper2spec 产出 {len(strategies)} 个策略，本平台一次只处理一个 —— "
+        f"取第 1 个（paper_title={raw.get('paper_title')!r}）。其余需人工挑选。"])
+    return first, notes
+
+
 def map_to_contract(
     raw: dict,
     *,
@@ -205,6 +228,8 @@ def map_to_contract(
     两者之间需要一张映射表（属人工配置），**不做猜测** —— 猜错会静默交易错标的。
     """
     notes: list[str] = []
+    raw, unwrap_notes = _unwrap_strategy(raw)      # 拆信封（真实 paper2spec 产出）
+    notes.extend(unwrap_notes)
     if not universe:
         notes.append(
             "未提供 universe（内部 symbol_id）—— x2strategy 给的是代码/名称，"

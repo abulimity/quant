@@ -12,6 +12,8 @@
        G5 lookback_sufficient    lookback ≥ 表达式里用到的最大窗口
        G6 windows_positive_int   窗口参数必须是正整数
        G7 cost_model_declared    必须**显式**选一个成本情景（不得沿用裸默认）
+       G8 symbols_listed         universe 里的标的在决策时点必须已上市（需注入 listing_dates）
+       G9 entry_present          必须有入场条件（否则静默全现金）
     2. **x2strategy 规则**（P5 接通后生效）—— 调用其 operator pitfall 检测。
 
 **闸门口径（§P3.2，避免 P3 自锁）**：
@@ -306,6 +308,29 @@ def _rule_symbols_listed(spec: StrategySpec, report: LintReport, *,
                 location=f"universe[{symbol}]"))
 
 
+def _rule_entry_present(spec: StrategySpec, report: LintReport) -> None:
+    """G9：必须有**入场条件**。
+
+    没有 `entry` 时，`emit_weights` 的资格筛选（`state == 1`）**恒为空** →
+    目标权重**恒为 0** → 策略**永远空仓**：回测跑得出来、不崩溃、不报错，
+    收益恒为 0。这正是 P3 已经中过一次的「**静默全现金**」类缺陷，
+    故在闸门处 fail-closed。
+
+    ⚠️ 实测触发路径（P5.6 端到端）：`paper2spec` 的真实产出若映射不出入口条件
+    （`entry=None`），闸门**竟然放行** —— 见 `EVIDENCE.md` §P5.6。
+
+    注：若将来引入「不需要入场条件、直接给权重面板」的 sizing 方法，
+    应在此**按 `spec.sizing.method` 分支放宽** —— 而不是把本规则删掉。
+    """
+    if spec.entry is None:
+        report.findings.append(LintFinding(
+            "G9.entry_present", "error",
+            "规格没有 entry（入场条件）→ 发射器产出的权重恒为 0，"
+            "策略会**静默全现金**（回测跑得出、收益恒 0、**不报错**）。\n"
+            "    处置：补一个入场表达式；若确实要「不交易」，请显式说明而不是留空。",
+            location="entry"))
+
+
 GENERIC_RULES = (
     _rule_dataset_known,
     _rule_fields_exist,
@@ -314,6 +339,7 @@ GENERIC_RULES = (
     _rule_lookback_sufficient,
     _rule_windows_positive_int,
     _rule_cost_model_declared,
+    _rule_entry_present,
 )
 
 

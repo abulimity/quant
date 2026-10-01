@@ -187,6 +187,7 @@
 | 5 | `envs/vbt` 的 `plotly<7` 上界（现 6.9.0） | 已人工裁决 | 待 vectorbt 上游适配 plotly 7 |
 | 6 | `litellm` 无 `__version__` | — | P5 起改 `importlib.metadata.version("litellm")` |
 | 7 | 手工跑 uv 前须清 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV` | 会把环境建到错误位置 | 例行注意（`bridge.py` 已自动清洗） |
+| 14 | **横截面算子族**（`rank`/`cross_sectional_rank`/`condition`）未进契约 | P5.6 实测：真实 paper2spec 的横截面动量规格**映射不出 entry**（横截面排名目前只在 `emit_weights` 里**隐式**实现）。经人工裁定（2026-10-02）：**另立任务**，不在 P5.6 内顺带做 | 单独立项（涉及 `Expr`/lint 因果性/emit 求值/跨引擎） |
 
 ---
 

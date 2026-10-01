@@ -123,6 +123,41 @@ class TestGateIntegration(unittest.TestCase):
         self.assertTrue(report.passed)
 
 
+class TestEnvelopeAndEntryGate(unittest.TestCase):
+    """P5.6 端到端暴露的两处问题（均已修）。"""
+
+    def test_real_paper2spec_envelope_is_unwrapped(self) -> None:
+        """真实产出是**信封** `{num_detected, paper_title, strategies:[…]}`，须拆开取用。
+
+        不修的话，整份产出会被当成「没有 logic_pipeline」→ **静默映射成空 entry**。
+        """
+        inner = dict(RAW_SPEC)
+        envelope = {"num_detected": 1, "paper_title": "X", "strategies": [inner]}
+        result = map_to_contract(envelope, universe=(1, 2, 3), source_paper="p.md")
+        self.assertEqual(result.spec.name, "ETF Momentum Rotation")
+        self.assertIsNotNone(result.spec.entry, "信封没有被拆开 —— entry 又静默变 None")
+
+    def test_multiple_strategies_are_not_silently_dropped(self) -> None:
+        """一封多策略：取第 1 个，但必须**如实记录**（不静默丢）。"""
+        envelope = {"paper_title": "Y",
+                    "strategies": [dict(RAW_SPEC), dict(RAW_SPEC)]}
+        result = map_to_contract(envelope, universe=(1,))
+        self.assertTrue(any("2 个策略" in n for n in result.notes), result.notes)
+
+    def test_spec_without_entry_is_rejected_by_the_gate(self) -> None:
+        """**静默全现金**防线：没有 entry 的规格必须被闸门拒。
+
+        没有 entry → `emit_weights` 的资格筛选恒为空 → 权重恒 0 → 策略永远空仓，
+        回测跑得出、收益恒 0、**不报任何错**。P5.6 实测：闸门**曾放行**。
+        """
+        raw = {k: v for k, v in RAW_SPEC.items() if k != "logic_pipeline"}
+        result = map_to_contract(raw, universe=(1, 2, 3))
+        self.assertIsNone(result.spec.entry)                # 前提：确实没映射出入口
+        report = lint_spec(result.spec)
+        self.assertFalse(report.passed, "没有 entry 的规格竟然过了闸门 → 会静默全现金")
+        self.assertIn("G9.entry_present", {f.rule for f in report.errors})
+
+
 class TestConservativeMapping(unittest.TestCase):
     """拿不准的**不猜**：如实记入 `unmapped` 并标为待人工复核。"""
 
