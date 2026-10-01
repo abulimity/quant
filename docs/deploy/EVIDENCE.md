@@ -1529,3 +1529,146 @@ LLM 通道：可用
 | 5 | **P4 改动尚未 git 提交** | — | 待确认后提交 |
 
 ---
+
+## P5 · bt 多标的换仓偏差定位（决策 2 = B，「现在定位」）
+
+**日期**：2026-09-29 ｜ **依据**：`HANDOFF.md` §7.3 决策 2、`LOCAL_DEPLOYMENT_PLAN.md` §P4.5
+
+### 命令
+
+```powershell
+Set-Location 'D:\project\quant'
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:PYTHONIOENCODING='utf-8'
+# 定位脚本（临时，位于 gitignored 的 runs/diag/bt_dev.py）
+.\.venv\Scripts\python.exe runs\diag\bt_dev.py
+# 回归
+.\.venv\Scripts\python.exe -m unittest tests.test_p5_bt_halt tests.test_engine_parity -v
+.\.venv\Scripts\python.exe -m unittest discover -t . -s tests
+```
+
+### 定位路径（逐层收窄）
+
+| 步 | 假设 | 实测 | 判定 |
+| --- | --- | --- | --- |
+| 1 | 整数股取整（bt 默认 `integer_positions=True`） | 关掉后 3.556e-02 → 3.556e-02 | ✗ 不是主因（但确是一处 ~3.3e-05 静默偏差，见 B1） |
+| 2 | 参考内核收盘诊断模式「按开盘定份额」 | 改成跟随 `fill_at`：3.556e-02 → 3.591e-02 | ✗ 不是主因（但确是自相矛盾，见 B2） |
+| 3 | 停牌门控（bt 无视 `traded`，ref 顺延） | **裁掉停牌会话 → 8.88e-16** | ✅ **主因** |
+| 4 | 份额公式/调仓逻辑错误 | 无停牌时吻合到机器精度 | ✗ 撮合本身**正确** |
+
+**种子**：首次净值分歧在 **2016-01-21**（源自 2016-01-20 换仓）；首次出现「一方交易、另一方不动」
+在 **2020-02-03**（春节休市）与 **2020-10-09**（国庆休市）—— 均为 XSHG 休市、联合索引仍有会话的日子。
+
+### 归因证明（最终数字，产品代码 `get_runner("bt")`）
+
+| 样本 | bt vs ref@open | bt vs ref@close | halt_sessions | bt 终值 |
+| --- | --- | --- | --- | --- |
+| 全样本 [1,2,3]（2598 会话） | 4.6128e-02 | 3.5910e-02 | **182** | 1,267,565.03 |
+| 裁掉停牌会话（2416 会话） | 1.1544e-02 | **8.8818e-16** | 0 | 1,362,563.20 |
+
+单标的场景 A′（对照）：`bt vs ref@close` = **0.0**（逐位一致）、`bt vs ref@open` = 7.05e-03。
+
+**结论**：bt 多标的换仓的偏差 **全部**来自「停牌顺延缺口」——bt 的向量化模型没有交易日
+掩码概念，无法逐标的顺延；撮合本身正确。**不存在隐藏的撮合缺陷。**
+
+### 顺带修掉的两处静默问题
+
+| # | 问题 | 症状 | 修复 |
+| --- | --- | --- | --- |
+| B1 | bt runner 用默认 `integer_positions=True` | 份额向下取整 → 多标的样本偏 **3.3e-05**，恰在容差边缘，极易当浮点噪声放过 | `bt_runner` 改 `integer_positions=False`（统一口径用分数份额） |
+| B2 | `MatchEngine.execute` 恒用**开盘估值**定份额（即使 `fill_at='close'`） | 收盘诊断模式自相矛盾 → 给对拍注入 **~1.3e-3** 伪偏差，掩盖真实归因 | 定份额估值改为**跟随 `fill_at`** |
+
+### 处置（**不**让别的引擎迁就 bt，§P4.5）
+
+- bt 保持原样；改为**显式可见**：`BtRunner.stats["halt_sessions"]` +
+  `run_meta["known_deviation"]` 含 `halt_deferral_unsupported`（>0 即表示结论受影响）。
+- 真正的下单层修复（逐标的顺延）留 P6 组合层。
+- 回归用例 **`tests/test_p5_bt_halt.py`**（4 用例）：V1 全样本缺口真实、
+  **V2 无停牌即吻合到机器精度**（核心，失败即表示另有缺陷）、V3 显式标注。
+
+### 自动化结果
+
+```text
+$ python -m unittest tests.test_p5_bt_halt tests.test_engine_parity -v
+Ran 21 tests in 45.571s
+OK
+
+$ python -m unittest discover -t . -s tests
+Ran 323 tests in 220.359s
+OK
+```
+
+**产出**：`tests/test_p5_bt_halt.py`；改动 `src/quantlab/engines/bt_runner.py`、
+`src/quantlab/engines/execution.py`；文档 `docs/deploy/parity_report.md`（§3.1 D4、§4.5.2）
+与 `docs/deploy/HANDOFF.md`（§1、§7.3、§7.4）。
+
+---
+
+## P5.5 · 自研 `spec2weights`（决策 1 = A「缩小验证形态」）
+
+**日期**：2026-09-29 ｜ **依据**：手册 §P5.5、`HANDOFF.md` §7.3 决策 1
+
+### 命令
+
+```powershell
+Set-Location 'D:\project\quant'
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:PYTHONIOENCODING='utf-8'
+.\.venv\Scripts\python.exe -m unittest tests.test_p5_spec2weights -v
+.\.venv\Scripts\python.exe -m unittest discover -t . -s tests
+```
+
+### 产出
+
+`src/quantlab/contract/emit.py::spec2weights(spec, data, *, signals=None, momentum_window=63)`
+→ `TargetWeights`（index=调仓日、columns=symbol_id、行和 ≤ 1）。
+
+- **规范入口**：底层复用 `emit_weights`（P3.3 已验），**单一实现**——用例
+  `test_matches_emit_weights_on_a_valid_spec` 钉住二者不得分歧（防「两份实现悄悄漂移」）。
+- **fail-closed**：多一步 `validate_spec`，结构非法的规格**拒绝发射**。
+- 已登记进 `contract/__init__.py` 的惰性导出表。
+
+### 验收
+
+| 项 | 用例 | 结果 |
+| --- | --- | --- |
+| V3a 同一份面板 → backtrader ↔ ref@open | `test_backtrader_matches_reference_on_the_same_weights` | ✅ ≤ 1e-4 |
+| V3a 同一份面板 → bt ↔ ref@close | `test_bt_matches_reference_on_the_same_weights` | ✅ ≤ 1e-9 |
+| V3b 与 backtrader 路径一致 | 同上（用 P4.2 的 `BacktraderRunner` 承担） | ✅ |
+| V3c 未来扰动 | `test_perturbing_the_future_does_not_move_past_weights` | ✅ 逐格不变 |
+| V4 fail-closed | `test_structurally_invalid_spec_is_refused` | ✅ |
+| 多标的换仓（如实标注**限 reference/bt**） | `test_backtrader_fails_loudly_rather_than_lying` | ✅ 明确失败而非静默错误 |
+
+> **V3b 的口径说明**：手册写「与 x2strategy **生成**的代码对拍」，但 §P5.4 已定
+> `spec2code` **无生成器**（只有 `validate_code`）；故以本平台的 backtrader 适配器
+> （P4.2）承担该比对 —— 与 P5.4 的既有结论一致。
+
+### ⚠️ 新发现：backtrader 两类 broker 模型拒单（**记录未修**，L1/L2）
+
+用**完整周频面板**驱动 backtrader 时暴露（**不是** spec2weights 的问题）：
+
+| # | 触发 | 机理 | 实测 | 处置 |
+| --- | --- | --- | --- | --- |
+| L1 | 面板**重复断言同一目标**（连续多行满仓 `1.0`） | 每行重算 `desired=权益×权重/开盘价`；价格下跌 → 补仓买单，现金≈0 → **Margin** | 单标的周频面板 **116 笔** Margin | 压缩为**变化点**面板 → 降至 **2 笔**（见 L2） |
+| L2 | **跳空低开日建仓**（`0→1`） | 保证金**下单前校验**用**上一收盘价**而非成交开盘价；低开 → `size×昨收 > 现金` → **Margin 误拒** | `2015-08-12` / `2020-03-18`：`pos=0`、`现金=净值=97.2万/81.2万`，**并非真缺钱** | 未修。对拍只取**建仓/清仓**受支持形态（决策 1 = A） |
+
+> L1/L2 说明：参考内核遇同情形按 F.5「缩减订单」不报错，backtrader 却整单拒绝 ——
+> 属**broker 模型差异**，是决策 1「缩小验证形态」的**实证依据**。完整记录见
+> `parity_report.md` §4.5.1。
+
+### 自动化结果
+
+```text
+$ python -m unittest tests.test_p5_spec2weights -v
+Ran 9 tests in 12.076s
+OK
+
+$ python -m unittest discover -t . -s tests
+Ran 332 tests in 206.822s
+OK
+```
+
+**产出**：`tests/test_p5_spec2weights.py`（9 用例）；改动 `src/quantlab/contract/emit.py`、
+`src/quantlab/contract/__init__.py`；文档 `parity_report.md`（§4.5.1）、`HANDOFF.md`（§1、§7.5）。
+
+---

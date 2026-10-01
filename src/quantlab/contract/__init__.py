@@ -2,12 +2,12 @@
 
     types.py —— `Signals` / `TargetWeights` / `StrategySpec` / `CostModel` + 校验器
     lint.py  —— 规格校验闸门（fail-closed）
-    emit.py  —— `emit_signals` / `emit_weights`
+    emit.py  —— `emit_signals` / `emit_weights` / `spec2weights`（P5.5 规范入口）
 
 对外入口（惰性导出）：
     from quantlab.contract.types import StrategySpec, CostModel, validate_signals
     from quantlab.contract.lint import lint_spec
-    from quantlab.contract.emit import emit_signals, emit_weights
+    from quantlab.contract.emit import emit_signals, emit_weights, spec2weights
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ _EXPORTS = {
     "LintReport": "quantlab.contract.lint",
     "emit_signals": "quantlab.contract.emit",
     "emit_weights": "quantlab.contract.emit",
+    "spec2weights": "quantlab.contract.emit",
 }
 
 __all__ = sorted(_EXPORTS)

@@ -27,6 +27,7 @@ from quantlab.contract.types import (
     Expr,
     StrategySpec,
     validate_signals,
+    validate_spec,
     validate_target_weights,
 )
 
@@ -253,6 +254,32 @@ def emit_weights(
 
     validate_target_weights(weights, name=f"TargetWeights({spec.name})")
     return weights
+
+
+def spec2weights(
+    spec: StrategySpec,
+    data: MarketData,
+    *,
+    signals: pd.DataFrame | None = None,
+    momentum_window: int = 63,
+) -> pd.DataFrame:
+    """**契约 → 目标权重**的规范发射器（LOCAL_DEPLOYMENT_PLAN.md §P5.5）。
+
+    为什么需要它（§P5.5「关键补口」）：x2strategy 只产 backtrader 代码。
+    若不自研这个发射器，`bt` 与 `vectorbt` 就**无法复用同一份规格** ——
+    规格只能在 backtrader 那条路上跑，跨引擎一致性就无从谈起。
+    有了它，**同一份规格**才能同时喂给 backtrader / bt / vectorbt：
+    规格成为三引擎的**单一真相**。
+
+    与 `emit_weights` 的关系：`emit_weights` 是底层发射器（P3.3 已验），
+    `spec2weights` 是 P5 的**契约闸门入口** —— 多一步 `validate_spec`，
+    结构非法的规格**拒绝发射**（fail-closed），而不是产出一份看着像样的权重。
+
+    返回：`TargetWeights`（index=调仓日、columns=symbol_id、行和 ≤ 1）。
+    **引擎无关**：本函数不 import 任何引擎。
+    """
+    validate_spec(spec)                    # fail-closed：结构非法不发射
+    return emit_weights(spec, data, signals=signals, momentum_window=momentum_window)
 
 
 # --------------------------------------------------------------------------- #
