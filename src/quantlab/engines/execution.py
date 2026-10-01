@@ -164,8 +164,13 @@ class MatchEngine:
                     if bool(self.data.traded.loc[session, s])
                     and self._fill_price(session, s) is not None}
 
-        # 目标份额按**成交时点权益**与成交价折算（F.6：权重 = 占权益的比例）
-        equity = self.cash + self._positions_value(session, at_open=True)
+        # 目标份额按**成交时点权益**与成交价折算（F.6：权重 = 占权益的比例）。
+        # ⚠️ 估值口径必须**跟随成交时点**：`fill_at='open'` 用开盘估值，
+        # `fill_at='close'`（诊断模式，复刻 bt）用收盘估值。若恒用开盘估值，
+        # 收盘诊断模式就会「按开盘定份额、按收盘成交」，自相矛盾 —— 实测会给
+        # bt 对拍引入 ~1.3e-3 的**伪偏差**（并掩盖真实归因）。
+        equity = self.cash + self._positions_value(
+            session, at_open=(self.fill_at == "open"))
         targets = {}
         for symbol in tradable:
             price = self._fill_price(session, symbol)
@@ -184,7 +189,8 @@ class MatchEngine:
                            float(self.pending_weight.get(symbol, 0.0)))
 
         # 2) 卖出结算后**重估权益**，再据此决定买入份额（现金约束以此刻为准）
-        equity_after = self.cash + self._positions_value(session, at_open=True)
+        equity_after = self.cash + self._positions_value(
+            session, at_open=(self.fill_at == "open"))
         for symbol in tradable:
             weight = float(self.pending_weight.get(symbol, 0.0))
             price = self._fill_price(session, symbol)
