@@ -187,6 +187,24 @@ class TushareSource:
             raise ContractError(f"{NAME}: fund_basic(market=E) 返回空")
         return raw
 
+    def _call_with_retry(self, fn, code: str, *, attempts: int = 4, base_delay: float = 1.0):
+        """单次 tushare 调用做**有限**重试（网络/瞬时限流），最终失败**重抛**。
+
+        只对「这次调用」重试，不掩盖数据缺口：重试耗尽仍失败 → 抛错让整批回填
+        可见地终止（而不是静默丢某只标的的 bars，制造日历缺口）。
+        """
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < attempts - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+        raise ContractError(
+            f"{NAME}: 标的 {code} 拉取失败（重试 {attempts} 次仍失败）: "
+            f"{type(last_exc).__name__}: {last_exc}") from last_exc
+
     def _fetch_per_symbol(self, pro, spec: FetchSpec, api: str, *, allow_empty: bool):
         if not spec.symbols:
             raise ContractError(f"{NAME}: {api} 需要指定标的（spec.symbols）")
@@ -195,16 +213,20 @@ class TushareSource:
         fn = getattr(pro, api)
 
         parts: list[pd.DataFrame] = []
-        for code in spec.symbols:
+        total = len(spec.symbols)
+        for i, code in enumerate(spec.symbols, 1):
             if api == "fund_daily":
-                raw = fn(ts_code=code, start_date=start, end_date=end)
-            else:  # fund_div：一次取全量，再按窗口裁剪到 ex_date <= end
-                raw = fn(ts_code=code)
+                raw = self._call_with_retry(
+                    lambda: fn(ts_code=code, start_date=start, end_date=end), code=code)
+            else:  # fund_div：一次取全量，再裁剪到 [start, end]（与 bars 同窗口）
+                raw = self._call_with_retry(lambda: fn(ts_code=code), code=code)
                 if raw is not None and len(raw) and "ex_date" in raw.columns:
-                    raw = raw[raw["ex_date"] <= end]
+                    raw = raw[(raw["ex_date"] >= start) & (raw["ex_date"] <= end)]
             if raw is not None and len(raw):
                 parts.append(raw)
             self._throttle()
+            if total >= 100 and (i % 100 == 0 or i == total):
+                print(f"  [tushare:{api}] {i}/{total}", flush=True)
 
         if not parts:
             if allow_empty:
