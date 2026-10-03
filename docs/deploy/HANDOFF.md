@@ -2,22 +2,30 @@
 
 > **一次性进度快照**，用于新会话接续执行。
 > 与 `CLAUDE.md` 的分工：`CLAUDE.md` 是**长期约定**（每个会话都适用），本文件是**当前进度**（完成后即失效）。
-> 更新时间：2026-09-29
+> 更新时间：2026-10-02
 
 ---
 
 ## 1. 一句话状态
 
-**P5 进行中（P5.1–P5.5 已完成）；下一步 = P5.6（端到端验收）。**
-（更新时间：2026-09-29，P5.5 完成时）
+**P5 进行中：P5.1–P5.5 已完成且验证；P5.6（端到端）**暂停，等一个口径决策**。**
+（更新时间：2026-10-02，P5.6 调研后暂停）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
 
-> ✅ **卡点已解除**：`bt` 多标的换仓的 **3.6% 偏差已定位** —— 是**停牌顺延缺口**
-> （bt 没有「交易日掩码」概念，无法逐标的顺延停牌；见 `parity_report.md` §4.5.2）。
-> **归因证明**：裁掉停牌会话后，同一对引擎吻合到 **8.9e-16（机器精度）**
-> → 偏差全部来自停牌顺延，**撮合本身没算错**。回归用例 `tests/test_p5_bt_halt.py`。
-> 定位过程中另修掉两处**静默**问题：bt 的整数股取整（B1）、参考内核收盘诊断模式的
-> 估值/成交口径自相矛盾（B2）。详见 §7.3 与 `EVIDENCE.md` §P5。
+> ✅ **已解除**：`bt` 多标的换仓的 **3.6% 偏差** = **停牌顺延缺口**（bt 无「交易日掩码」，
+> 无法逐标的顺延停牌）。裁掉停牌会话后同一对引擎吻合到 **8.9e-16** → 撮合本身没算错。
+> 回归用例 `tests/test_p5_bt_halt.py`；另修两处**静默**问题（bt 整数股取整、参考内核收盘
+> 诊断口径自相矛盾）。见 §7.4 与 `parity_report.md` §4.5.2。
+
+> ⛔ **当前卡点（P5.6）——不是 bug，是口径未定 + 能力域不相交**：
+> - 真实 `paper2spec` 产出是**带下标的伪代码 / 矩阵 / 因子**（实测两次），
+>   `map_to_contract` 只认理想化的 `name(params)` → **映射不出 entry**；
+> - x2 **旗舰样例 UPSA** 是**组合优化**（`output_type: matrix`、`long_short`），
+>   与本平台契约（时序标量信号、只做多、权重）**能力域不相交**；
+> - x2strategy 本质是 **agent skill**：①②（解析/规格）是**包内函数**（可经桥拿），
+>   ③ backtrader 代码由 **agent 现场写**（**包里无生成器**），④ 回测/诊断由 agent 跑。
+> - 链路**停在闸门且失败可见**（新增 **G9** 拦住了曾经的「静默全现金」）。
+> → **待人工裁定**：「**规格为真相** vs **代码为真相**」。详见 §7.6。
 
 ---
 
@@ -244,6 +252,55 @@
   **L2（跳空低开建仓→保证金按昨收校验而误拒）**，**记录未修**，见 `parity_report.md` §4.5.1
   —— 这正是决策 1 缩小验证形态的实证依据。
 - **用例**：`tests/test_p5_spec2weights.py`（9 用例）。全套 **332 tests OK**。
+
+---
+
+## 7.6 P5.6 端到端：调研结论与卡点（2026-10-02）
+
+### 已完成
+
+| 步 | 结果 |
+| --- | --- |
+| LLM 通道 | ✅ 经桥 → `envs/x2` **真实调云端成功**（`anthropic/claude-sonnet-4-5`） |
+| 合成样例论文 | `papers/sample-momentum.md`（横截面）、`papers/sample-ma-cross.md`（时序） |
+| **信封缺口**（修） | 真实产出是信封 `{num_detected, paper_title, strategies:[…]}`；`map_to_contract` 按单策略字典处理 → **静默空 entry**。已加 `_unwrap_strategy` |
+| **G9 闸门**（修） | ⚠️ 闸门**曾放行 `entry=None`** → 权重恒 0 → **静默全现金**。已加 `G9.entry_present`（fail-closed） |
+| **lookback 崩溃**（修） | `lookback_period` 可能是字符串（`"20 and 60 trading days"`）→ `int()` 崩溃。已加 `_parse_lookback` |
+
+### x2strategy 的输出（**定论**，读源码 + 官方样例得出）
+
+**它是 agent skill，不是库**（`SKILL.md` v0.6.1：「You are the executor」）。产出四站：
+
+| 站 | 工件 | 谁产出 | 形态 |
+| --- | --- | --- | --- |
+| ① 解析 | `content.json/md` | **包内函数** | `PaperContent` |
+| ② 抽取 | `spec.json/md` | **包内函数** `extract_spec()` + LLM | **`StrategySpec` 信封**（可经桥拿） |
+| ③ 生成 | `strategy.py` | **agent 现场写**；包只 `validate_code` | **backtrader 代码**（可交易）**或 pandas**（研究型） |
+| ④ 回测/诊断 | `results/*` | **agent 跑** | metrics + 图 |
+
+- **③ 包里没有生成器**（`spec2code/` 只有 `config/models/validator`）；官方 UPSA 生成物实测
+  **500 行 pandas/numpy、`grep -c backtrader` = 0**（因其不可交易）。
+- **输出内容由**：输入文档 + `prompts.py` 的 LAYER0–4 + `mode`(multilayer/single) +
+  `instruction_context` + **LLM**（非确定）决定；**代码形态**另由「是否可交易」决定。
+- **能力域判据**（spec 自带）：`strategy_type` / `indicators[].scope`（time_series vs
+  cross_sectional）/ `output_type`（scalar·boolean·series vs **ranking·vector·matrix**）/
+  `position_sizing.long_short`（本平台 F.1 **只做多**）。→ 闸门可**自动判定能力域内外**。
+
+### ⛔ 卡点：口径未定（**待人工裁定**）
+
+| 方案 | 含义 | 代价 |
+| --- | --- | --- |
+| **A. 规格为真相**（推荐，符合手册 §P5.5） | spec 是单一真相；`spec2weights` 投影成权重，四引擎各司其职（**vectorbt 粗筛 → backtrader 精验 → bt 组合 → reference 对账**）；x2 生成的 backtrader 代码作**第二实现**用于对拍（§P5.5 V3b） | 需要「真实产出 → 规格」的**解析层**；能力域外的论文必须 **fail-closed 标注** |
+| **B. 代码为真相** | x2 的 backtrader 代码当入口 | bt/vectorbt/reference 对 x2 策略**全部失效** → 退化单引擎，跨引擎一致性保证丢失 |
+
+> **为什么需要 A**：x2 只产 backtrader 代码；**若不自研 `spec2weights`，vectorbt 与 bt
+> 无法复用同一规格**（手册 §P5.5「关键补口」原文）。A 正是让另外三个引擎有角色的机制。
+
+### 下一步（等决策）
+
+- 选 **A** → 先定第二个子问题：解析层是**自建**（把指标 id / 条件伪代码 → `Expr`）还是
+  **改 prompt 让 x2 直接产出我方 schema**；再落「按 spec 元数据判能力域」的闸门规则。
+- 选 **B** → 重新定义三引擎的适用范围，架构退化为 backtrader 单引擎为主。
 
 ---
 

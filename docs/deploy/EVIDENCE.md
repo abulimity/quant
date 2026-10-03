@@ -1716,4 +1716,42 @@ OK
 **新增/改动**：`papers/sample-momentum.md`；`src/quantlab/x2/paper2spec.py`（信封拆解）、
 `src/quantlab/contract/lint.py`（G9）；`tests/test_p5_paper2spec.py`（+3 用例）。
 
+### ⏳ 追加：换**时序**样例后仍映射不出（选项 C 的前提**不成立**）
+
+按人工决策 C，另写 `papers/sample-ma-cross.md`（SMA20/60 金叉/死叉择时）再跑一遍。
+LLM 产出确实是**时序**形态（`sma_20` / `sma_60`）。但映射仍失败，且暴露出**更多**问题：
+
+| # | 现象 | 性质 |
+| --- | --- | --- |
+| 1 | `lookback_period = "20 and 60 trading days"`（**字符串**）→ `int()` **崩溃** | 已修：`_parse_lookback` 稳健解析（取最大整数），失败回退表达式推断 + 记录 |
+| 2 | `condition` 步骤的 `expression` 是**伪代码**：`"(sma_20_t > sma_60_t) AND (sma_20_{t-1} <= sma_60_{t-1})"` —— 带**下标**（`_t` / `_{t-1}`）与 `AND` | **映射器无法解析**（期望 `name(args)` 形态） |
+| 3 | 横截面样例的 `cross_sectional_rank(...)` 同理 | 同上 |
+
+**结论**：真实 paper2spec 产出（无论时序还是横截面）都用**带下标/逻辑词的伪代码**
+描述 `logic_pipeline`，而 `map_to_contract` 只认**理想化的 `name(params)` 形态**
+（P5.2 的样例 RAW_SPEC 就是照这个理想形态写的）。**所以「换个时序样例」解决不了** ——
+需要的是一个**真正的映射层**（把指标 id / 条件伪代码 转成 `Expr`），不是换个样例。
+
+链路**仍停在闸门**（G9 正确拒绝 entry=None），**失败可见**。方向待人工裁定。
+
+### ⏳ 追加：取到 **x2strategy 官方样例（UPSA）** 后 —— 结论是「**能力域不相交**」
+
+按人工决策 C，经本机代理从 `github.com/ALAGENT-HKU/x2strategy@e9cd907d`
+取到官方 walkthrough（`examples/upsa/`）。看完官方产物后，结论**比预想更根本**：
+
+| 维度 | x2strategy 的 UPSA 样例 | 本平台契约 |
+| --- | --- | --- |
+| 策略类型 | **组合优化**（ridge + LOO + 非负 Markowitz） | 时序**信号择时**（`sma/ema/momentum/gt/cross_*`） |
+| 数据 | **月度因子收益面板**（CSV；`price_data:false`） | 日频 bar（open/close/traded + `available_utc`） |
+| 算子 | **矩阵/最优化**（`F'F/T`、`(Σ+zI)⁻¹μ`、LOO） | 标量时序算子，无矩阵/优化 |
+| 仓位 | `direct_weights`、**多空**因子权重 | `top_n` 等权、只做多（F.1 不加杠杆不做空） |
+| 官方「spec」实为 | **代码生成接口**（`compute_*` → DataFrame 的契约） | 引擎无关的 `Expr` 树 + sizing |
+
+即：**x2strategy 的产出域与本平台的契约域不相交**。P5.2 的映射器是照着
+**测试里手写的理想输入**（`RAW_SPEC`）设计的，那份输入比真实产出**干净得多、也窄得多** ——
+真实产出是伪代码/矩阵/因子，映射器一个都吃不下。
+
+**故 P5.6 设想的「样例论文 → spec → 回测」链路，无法靠「映射真实 x2 产出」实现。**
+这不是 bug，是**产品定位差异**。方向待人工裁定（建议：收敛范围 + 明确标注超出能力域的论文）。
+
 ---

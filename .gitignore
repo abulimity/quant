@@ -13,6 +13,9 @@ __pycache__/
 data/
 runs/
 
+# 论文输入（二进制、体积大，且多为第三方版权材料）
+papers/*.pdf
+
 # Notebook
 .ipynb_checkpoints/
 

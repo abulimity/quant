@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -248,7 +249,12 @@ def map_to_contract(
         notes.append("原始规格含成本/执行描述，但**不自动采纳** —— "
                      "成本情景须按 F.8 显式选定（否则闸门 G7 会拒）")
 
-    lookback = int(raw.get("lookback_period") or 0) or _infer_lookback(entry)
+    raw_lookback = raw.get("lookback_period")
+    lookback = _parse_lookback(raw_lookback) or _infer_lookback(entry)
+    if raw_lookback not in (None, "") and _parse_lookback(raw_lookback) == 0:
+        notes.append(
+            f"lookback_period={raw_lookback!r} 无法解析成数值 —— 改用表达式推断值 "
+            f"{lookback}（随后由闸门 G5 校验是否够用）。")
     top_n = _top_n(raw)
 
     spec = StrategySpec(
@@ -282,6 +288,20 @@ def _top_n(raw: dict) -> int:
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return value
     return 3
+
+
+def _parse_lookback(value) -> int:
+    """x2 的 `lookback_period` 可能是**数字**，也可能是字符串（实测出现过
+    `"20 and 60 trading days"`）。早先直接 `int(value)` → **崩溃**。
+    这里稳健取值：数字直接用；字符串取其中**最大**的整数（窗口应取最长的那个）；
+    解析不出则返回 0，由调用方回退到「按表达式推断」。
+    """
+    if value is None or isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value) if value > 0 else 0
+    numbers = [int(n) for n in re.findall(r"\d+", str(value))]
+    return max(numbers, default=0)
 
 
 def _infer_lookback(entry: Expr | None) -> int:
