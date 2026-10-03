@@ -8,8 +8,8 @@
 
 ## 1. 一句话状态
 
-**P5 进行中：P5.1–P5.5 已完成且验证；P5.6（端到端）**暂停，等一个口径决策**。**
-（更新时间：2026-10-02，P5.6 调研后暂停）
+**P5 进行中：P5.1–P5.5 已完成且验证；P5.6 已用真实研报跑通「Parse→Extract→agent 生成代码→校验」，但产出代码有实质语义偏差，且口径决策仍悬。**
+（更新时间：2026-10-02；本会话全过程见 §7.7）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
 
 > ✅ **已解除**：`bt` 多标的换仓的 **3.6% 偏差** = **停牌顺延缺口**（bt 无「交易日掩码」，
@@ -26,6 +26,9 @@
 >   ③ backtrader 代码由 **agent 现场写**（**包里无生成器**），④ 回测/诊断由 agent 跑。
 > - 链路**停在闸门且失败可见**（新增 **G9** 拦住了曾经的「静默全现金」）。
 > → **待人工裁定**：「**规格为真相** vs **代码为真相**」。详见 §7.6。
+> - **本会话新增（2026-10-02，§7.7）**：真实研报已跑通 Parse+Extract（`spec.json` 已产出）；
+>   agent 生成的 `strategy.py` 过 `validate_code`，但**静态审阅发现 H1–H6 语义偏差**（会改变结果）；
+>   x2strategy 的 `max_tokens=8192` **写死**、推理模型下必崩，**已打补丁**（在 `.venv` 内，重建即失）。
 
 ---
 
@@ -64,6 +67,9 @@
 | 三环境 Python | 均 **3.12.13**（起点即通过，无需下调） |
 | ⚠️ 外来环境变量 | 手工跑 uv 前**必须**清除 `UV_PROJECT_ENVIRONMENT` 与 `VIRTUAL_ENV`（外部工具「Agents Anywhere」注入，会把环境建到错误位置）；`src/quantlab/engines/bridge.py` 已自动清洗 |
 | x2strategy 导入名 | 发行名 `x2strategy`，但**可导入模块是 `paper2spec` / `spec2code`**（**没有** `x2strategy` 模块） |
+| ⚠️ **x2 云端中转**（本会话实测） | 中转 `/models` **只提供** `deepseek-flash` / `deepseek-v4-pro`（**均为推理模型**，默认 `effort=high`）；`config/llm.toml` 写 `claude-sonnet-4-5` 会被**静默回落**到 `deepseek-flash`。litellm **原生**认 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`（无需桥接） |
+| ⚠️ **x2strategy `max_tokens` 写死** | `extractor.py:409/423`=8192、`llm.py:44/68` 默认 16384，**无环境变量可调**。推理模型下 Layer-2 思维链吃光 8192 → `content=None` → `AttributeError`。**已打补丁**（→393216，共 4 处），补丁在 `.venv` 内**重建即失**，依据 `envs/x2/X2STRATEGY_PATCH.md` |
+| x2 其余能力（本会话实测） | `spec2code` **只有 `validate_code`（无生成器）**；`operator_pitfall` 语料**仅 4 条**、全属组合优化域，对时序 ETF 轮动命中牵强；embedding `BAAI/bge-small-en-v1.5` **已本地缓存**（`HF_HUB_OFFLINE=1` 可离线） |
 
 ---
 
@@ -196,6 +202,9 @@
 | 6 | `litellm` 无 `__version__` | — | P5 起改 `importlib.metadata.version("litellm")` |
 | 7 | 手工跑 uv 前须清 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV` | 会把环境建到错误位置 | 例行注意（`bridge.py` 已自动清洗） |
 | 14 | **横截面算子族**（`rank`/`cross_sectional_rank`/`condition`）未进契约 | P5.6 实测：真实 paper2spec 的横截面动量规格**映射不出 entry**（横截面排名目前只在 `emit_weights` 里**隐式**实现）。经人工裁定（2026-10-02）：**另立任务**，不在 P5.6 内顺带做 | 单独立项（涉及 `Expr`/lint 因果性/emit 求值/跨引擎） |
+| 15 | **x2strategy `max_tokens` 补丁在 `.venv` 内** | 重建环境（`uv sync`/重装）即丢 → Extract Layer-2 会再次崩溃 | 重建后按 `envs/x2/X2STRATEGY_PATCH.md` 复现 |
+| 16 | **`strategy.py` 静态审阅出 H1–H6 语义偏差**（HRP 退化等权、风险袖套不缩放、横截面 rank 未用、跳空延迟全局生效…） | 若要真跑此代码，须先修，否则结果无解释力 | 待定，见 §7.7 与 `envs/x2/X2_PAPER2CODE_REVIEW.md` |
+| 17 | `config/llm.toml` 模型名与中转实际提供的不符 | 已改 `claude-sonnet-4-5` → `deepseek-v4-pro` | ✅ 本会话已修 |
 
 ---
 
@@ -301,6 +310,44 @@
 - 选 **A** → 先定第二个子问题：解析层是**自建**（把指标 id / 条件伪代码 → `Expr`）还是
   **改 prompt 让 x2 直接产出我方 schema**；再落「按 spec 元数据判能力域」的闸门规则。
 - 选 **B** → 重新定义三引擎的适用范围，架构退化为 backtrader 单引擎为主。
+
+---
+
+## 7.7 本会话：用真实研报跑通 paper→code 链（2026-10-02）
+
+**目标**：拿一篇真实研报端到端测 x2strategy，**只测 x2strategy 本身**（不碰平台契约层）。
+
+**输入**：`papers/多资产 ETF 轮动策略：固收+视角下动态组合管理的构建与实践.pdf`（**已 gitignore**）。
+
+### 结果
+
+| 阶段 | 状态 | 关键数字 |
+| --- | --- | --- |
+| Parse（`parse_document`，Mode A） | ✅ **真实产出** | 69.8s；`content.json` 107KB |
+| Extract（`extract_spec`，multilayer） | ✅ **真实产出**（**须先打补丁**） | 490.2s；1 策略 / **42 指标 / 18 步 / 1 执行计划 / 11 风控** |
+| `spec2code.validate_code` | ✅ | 4/4 用例正确；注册表 **317 指标**；**结构性缺失只报 warning、不报 error** |
+| `paper2spec.operator_pitfall` | ✅（域窄） | 语料 4 条；切 61 查询；命中 2 条但**语义牵强** |
+| 生成 backtrader 代码 | ⚠️ **agent 生成**（非包产物） | `strategy.py` 537 行；`validate_code` = `valid=True, 0 err / 0 warn` |
+
+**产物**（`runs/x2/<slug>/`，**均 gitignored**）：`content.*` / `spec.*` / `operator_pitfall.*` /
+`strategy.py` / `strategy_validation.json` / `run_meta.json`。
+
+### 关键结论
+
+1. **包只覆盖到「规格」**：③ 生成代码、④ 回测诊断都是 **agent 侧**流程 —— 包里**无生成器、无 runner**。
+   故「能否直接跑 backtrader 回测」= **不能**：需 agent 写代码 + 自行提供数据。
+2. **`max_tokens` 写死 + 推理模型中转 = Extract 必崩**（详见 §3）。已打补丁并留证。
+3. **静态审阅**：agent 生成的 `strategy.py` 与 `spec.json` 存在 **H1–H6 语义偏差**（会改变结果）
+   与 M1–M7 简化。`validate_code` **只查语法/结构/指标名，查不出语义**。
+   详见 `envs/x2/X2_PAPER2CODE_REVIEW.md`。
+4. **提交**：分支 `feat/x2-paper2code`（`5489565`）已 **fast-forward 并入 `master`**
+   （现 `master` = `bc2ddb2`，后者含 P5.6 遗留提交）。**未推送**；分支本身**未删除**。
+
+### 新增脚本（已入库）
+
+`envs/x2/run_paper2spec.py`（Parse+Extract 独立驱动）、`_llm_probe.py`（通道探针）、
+`_diag_extract_l2.py`（根因诊断）、`run_x2_extra_tests.py`（`validate_code` + `operator_pitfall`）、
+`X2STRATEGY_PATCH.md`（补丁记录）、`X2_PAPER2CODE_REVIEW.md`（静态审阅）。
 
 ---
 
