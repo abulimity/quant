@@ -1755,3 +1755,39 @@ LLM 产出确实是**时序**形态（`sma_20` / `sma_60`）。但映射仍失�
 这不是 bug，是**产品定位差异**。方向待人工裁定（建议：收敛范围 + 明确标注超出能力域的论文）。
 
 ---
+
+### futu OpenD · `get_plate_stock("HK.Fund")` 基金列表拉取（2026-10-03）
+
+**目的**：接通 futu OpenD 行情接口，请求 `get_plate_stock("HK.Fund", sort_field=SortField.CODE, ascend=True)`，把返回的基金成分列表落成 bronze 不可变快照。
+
+**前置**：OpenD 已运行并登录，地址 `127.0.0.1:11111`（`FutuOpenD.xml` 默认）。
+
+**执行**：
+
+```powershell
+# 1) 隔离环境：futu-api 与 core 的 pandas 3.0.6 解耦，独立 uv.lock
+#    新建 envs/futu/pyproject.toml（futu-api + pyarrow）
+uv sync --project envs/futu
+# 2) 拉取并落盘
+uv run --project envs/futu python envs/futu/fetch_plate_stock.py
+```
+
+**产出**：
+- `envs/futu/pyproject.toml` + `envs/futu/uv.lock`（独立环境，futu-api==10.11.7108）
+- `envs/futu/fetch_plate_stock.py`（入口脚本，含 `if __name__ == "__main__":` 保护）
+- `data/bronze/futu/plate_stock/20261003_032558_599651/plate_stock.parquet`（472 行 × 10 列）
+- 同目录 `manifest.json`（plate_code / sort_field / ascend / host / port / futu_api_version / fetched_at_utc / rows / columns）
+
+**验证**：
+- [ ] **V1** `uv run --project envs/futu python -c "import futu; print(futu.__version__)"` → `10.11.7108`
+- [ ] **V1** 脚本退出码 0，`ret == RET_OK`，返回 472 行（非空，未触发空表拒绝路径）
+- [ ] **V2** parquet 可读回：shape `(472, 10)`；`code` 首行 `HK.02800`；`stock_name` 首行 == `盈富基金`（U+76C8 U+5BCC U+57FA U+91D1，codepoint 断言通过）
+- [ ] **V2** manifest 字段齐全（fetched_at_utc、rows=472、columns 列表）
+
+**列**：`code / lot_size / stock_name / stock_owner / stock_child_type / stock_type / list_time / stock_id / main_contract / last_trade_time`
+
+**备注**：
+- 板块成分列表属 reference/universe 数据，本次为**一次性 fetch**，未套 `bars_daily` 契约、未接入 ingest 体系与 `sources.yaml`。
+- 编码：parquet 内为正确 UTF-8；PowerShell 控制台显示乱码是控制台 GBK 代码页的显示问题，非数据问题（已用 codepoint 断言排除）。
+
+---
