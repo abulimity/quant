@@ -14,10 +14,22 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date
 
-from quantlab.ingest.orchestrator import DEFAULT_ROOT, IngestError, ingest
+from quantlab.ingest.orchestrator import IngestError, ingest
 from quantlab.store.db import connect, warehouse_path
 from quantlab.store.migrate import SCHEMA_VERSION, apply_migrations, read_schema_sql
+
+
+def _parse_date(raw: str | None) -> date | None:
+    return date.fromisoformat(raw) if raw else None
+
+
+def _parse_symbols(raw: str | None) -> tuple[str, ...] | None:
+    if not raw:
+        return None
+    parts = tuple(p.strip() for p in raw.split(",") if p.strip())
+    return parts or None
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
@@ -33,6 +45,9 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
                 warehouse=args.warehouse,
                 universe=args.universe,
                 con=con,
+                start=_parse_date(args.start),
+                end=_parse_date(args.end),
+                symbols=_parse_symbols(args.symbols),
             )
         except IngestError as exc:
             print(f"ingest 失败：{exc}", file=sys.stderr)
@@ -56,10 +71,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_ingest = sub.add_parser("ingest", help="抓取并落成不可变快照")
-    p_ingest.add_argument("--source", default="synthetic", help="数据源（当前仅 synthetic）")
-    p_ingest.add_argument("--universe", default="fixture", help="标的集合（当前仅 fixture）")
-    p_ingest.add_argument("--out", default=str(DEFAULT_ROOT),
-                          help="快照根目录（默认 data/bronze/synthetic）")
+    p_ingest.add_argument("--source", default="synthetic", help="数据源（synthetic / tushare）")
+    p_ingest.add_argument("--universe", default="fixture", help="synthetic 的标的集合（fixture）")
+    p_ingest.add_argument("--start", default=None,
+                          help="起始交易日 YYYY-MM-DD（tushare；缺省=研究窗口起点）")
+    p_ingest.add_argument("--end", default=None,
+                          help="结束交易日 YYYY-MM-DD（tushare；缺省=研究窗口终点）")
+    p_ingest.add_argument("--symbols", default=None,
+                          help="逗号分隔的 ts_code（tushare；缺省=全量非 REIT 名单）")
+    p_ingest.add_argument("--out", default=None,
+                          help="快照根目录（缺省按 source 选 data/bronze/<source>）")
     p_ingest.add_argument("--warehouse", default=None,
                           help="DuckDB 台账路径（默认 data/warehouse.duckdb）")
     p_ingest.set_defaults(func=_cmd_ingest)

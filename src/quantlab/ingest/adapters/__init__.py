@@ -10,6 +10,7 @@ _EXPORTS = {
     "AkshareSource": "quantlab.ingest.adapters.akshare",
     "YfinanceSource": "quantlab.ingest.adapters.yfinance",
     "FredSource": "quantlab.ingest.adapters.macro_fred",
+    "TushareSource": "quantlab.ingest.adapters.tushare",
 }
 
 __all__ = sorted(_EXPORTS)

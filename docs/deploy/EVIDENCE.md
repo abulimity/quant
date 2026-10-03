@@ -1791,3 +1791,75 @@ uv run --project envs/futu python envs/futu/fetch_plate_stock.py
 - 编码：parquet 内为正确 UTF-8；PowerShell 控制台显示乱码是控制台 GBK 代码页的显示问题，非数据问题（已用 codepoint 断言排除）。
 
 ---
+
+### tushare 真实供应商接入 + 小范围端到端验证（2026-10-03）
+
+**目的**：按计划 §五/§六，把 `TushareSource` 适配器接入 core 的 `Source` 协议，
+并**先做小样本验证**（2 只 ETF × 1 年跑通 fetch→normalize→快照→DuckDB 查询），
+确认无误后再全量回填。
+
+**接入产出**（core 环境，`src/quantlab/**`）：
+
+| 文件 | 改动 |
+| --- | --- |
+| `ingest/adapters/tushare.py` | `TushareSource`（`name="tushare"`）：`fetch()` 延迟导入 `tushare` SDK 并按 dataset 分发 `fund_basic`/`fund_daily`/`fund_div`；`normalize()` 映射到 `symbols`/`bars_daily`/`corporate_actions` 契约；`available_utc` 保守滞后一日（写 `availability_note`）；新增 `assign_symbol_ids()`（确定性永久 ID，按 ts_code 排序 1..N，**排除 REITs**） |
+| `ingest/realdata.py`（新增） | `build_tushare_bundle()`（fetch→normalize→打包 `FixtureBundle`）；`check_real_invariants()`（通用结构红旗，**不依赖**夹具特有的 `traded`/`analytic_tri`/fx 对拍）；`_derive_snapshot_id()`（内容哈希派生快照 ID，**不含** `downloaded_at`/`snapshot_id`，保证幂等） |
+| `ingest/orchestrator.py` | `ingest()` 新增 `source="tushare"` 分派（`start`/`end`/`symbols` 参数），落 `data/bronze/tushare/`；`ingest_bundle()` 增加 `check=` 参数（合成走 `check_invariants`，真实走 `check_real_invariants`） |
+| `cli.py` | `ingest` 子命令新增 `--source tushare`、`--start/--end/--symbols` |
+| `store/warehouse.py` | `load_snapshot`/`register_snapshot_views` 对**缺失表**改为 `continue` 跳过——部分快照（真实供应商只产 3 张表）合法 |
+
+**适配器实测字段口径（探针逐项核对，`_probe_tushare.py`，用后已删）**：
+
+| 接口 | 实测结论 |
+| --- | --- |
+| `fund_basic(market=E)` | 全名单 **2966 行**；`fund_type` 含 `REITs`（105 只）→ 排除后 **2861 只**；`status` 覆盖 `L/D/I`（含退市，防幸存者偏差 F.7） |
+| `fund_daily` | `vol` = **手**（未折算份数，声明不换算）、`amount` = **千元**；2023 年 510300/159919 各 **242 根**，与 XSHG 日历**零缺失**（见下） |
+| `fund_div` | 字段名是 **`div_cash`**（非计划猜测的 `cash_div`）；**系统性地 2× 重复**（34 行 → 去重 17 行），已在 normalize 去重 |
+| `fund_adj` | `adj_factor` 可用（5000 分，`fund_adj` 确定可用）；本次小样本未落库，全量回填时再进复权因子表 |
+| `hk_basic` | 可调；`curr_type`（HKD）/`trade_unit` 齐全——HK 元数据可走 tushare，行情仍走 futu |
+| 交易日历 | **exchange-calendars 无 `XSHE`**——深市 ETF 与沪市共用 `XSHG` 日历（`.SZ` 映射 `("XSHG","XSHG")`，已修 + 测试固化） |
+
+**端到端小样本（2 只 ETF × 2023，`ingest(source="tushare")` → 快照 → DuckDB 查询）**：
+
+```text
+=== ingest #1 ===
+snapshot_id: tushare-a85f99f524c6cbf6   status: ok
+row_counts: {'symbols': 2861, 'bars_daily': 484, 'corporate_actions': 14}
+=== ingest #2 (idempotent) ===
+snapshot_id: tushare-a85f99f524c6cbf6   status: exists   already_present: True
+=== load_snapshot ===
+loaded: {'symbols': 2861, 'bars_daily': 484, 'corporate_actions': 14}
+=== DuckDB 查询 ===
+symbols rows: 2861
+bars rows: 484
+corporate_actions rows: 14
+bars 每标的行数: 159919.SZ 242 / 510300.SH 242
+FK 检查 (bars.symbol_id 未在 symbols 的行数): 0
+available_utc 与 ts 分离检查 (available_utc < ts 的行数): 0
+```
+
+**逐条判定**：
+
+- [x] **V2** 全流程跑通：`fund_basic`(名单) → 分配永久 ID → `fund_daily`/`fund_div`(循环) → normalize → `check_real_invariants` → 快照 → DuckDB 查询
+- [x] **V3** 幂等：二次 ingest 返回 `exists`、`already_present=true`，**不重写、不重复登记**（快照 ID 由内容哈希派生，不依赖 `downloaded_at` 时钟）
+- [x] **V3** FK 自洽：`bars_daily.symbol_id` 全落在 `symbols` 内（0 孤儿）
+- [x] **V3** 时序纪律：`available_utc >= ts` 全成立（0 未来函数行）——`available_utc` 保守滞后一日并已 `availability_note` 披露
+- [x] **V3** 日历对账：510300.SH + 159919.SZ 各 242 根，与 XSHG 2023 交易日**零缺失**（停牌日形态待 P2.6 质量规则阶段细核）
+- [x] **V1** 部分快照装载：真实快照只产 3 张表（symbols/bars_daily/corporate_actions），`load_snapshot` 与视图注册正确跳过缺失的 4 张，不报错
+
+**回归**：生成合成夹具 `synth-v1-613c5986a898`（P5 测试依赖的派生数据，此前在本 worktree 缺失致 12 个 P5 用例 error）后全量回归：
+
+```text
+$ .\.venv\Scripts\python.exe -m unittest discover -t . -s tests
+Ran 366 tests in 184.880s
+OK
+```
+
+**待办（全量回填前，均不阻塞本次小样本验证）**：
+
+1. **复权因子**：`fund_adj` 未进契约快照，总收益计算需补复权因子表 + silver/gold 清洗衔接（计划 §二 2.4 F.6）。
+2. **宏观 / index 基准 / hk_basic / US / FX**：本次仅境内 ETF 的 `symbols`/`bars_daily`/`corporate_actions`；其余按计划走 futu/yfinance/宏观接口，属后续回填范围。
+3. **`traded` 列**：真实数据无 `traded`（停牌日无行），`quality/clean.py` 的 session-status/gold 视图依赖 `traded`——真实数据停牌日判定（缺口 vs 停牌）是 P2.6 的**延期项**，全量回填时需按「日历开盘但无行 = 缺口」三态重写。
+4. **限流**：当前 `rate_limit_delay=0.2s`（~300 次/分，留 500 分额度余量）；全量 2861 只 ETF 回填约 12–30 分钟，需幂等可重跑（已保证）。
+
+---

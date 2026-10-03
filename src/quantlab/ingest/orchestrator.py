@@ -21,8 +21,9 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import pandas as pd
 
@@ -33,10 +34,13 @@ from quantlab.fixtures.synth import (
     snapshot_dir,
     write_snapshot,
 )
+from quantlab.ingest.realdata import build_tushare_bundle, check_real_invariants
+from quantlab.fixtures.spec import STUDY_START, STUDY_END
 from quantlab.store.db import connect, warehouse_path
 from quantlab.store.migrate import apply_migrations
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "data" / "bronze" / "synthetic"
+TUSHARE_ROOT = Path(__file__).resolve().parents[3] / "data" / "bronze" / "tushare"
 
 # 这些数据集参与 watermark（数据边界）计算
 _WATERMARK_TABLES = ("bars_daily", "fx_rates", "macro_series")
@@ -158,18 +162,22 @@ def ingest_bundle(
     source: str = "synthetic",
     register: bool = True,
     con=None,
+    check: Callable[[FixtureBundle], list[str]] = check_invariants,
 ) -> IngestResult:
-    """把一个夹具 bundle 落成**不可变快照**并登记。幂等。
+    """把一个 bundle 落成**不可变快照**并登记。幂等。
 
     `con` —— 可选：调用方已有的**可写**连接。传入则复用、**不由本函数关闭**
     （见 `_write_target` 里关于同进程连接配置冲突的说明）。
+
+    `check` —— 落盘前的自洽性检查：合成夹具用 `fixtures.synth.check_invariants`，
+    真实数据用 `realdata.check_real_invariants`。
     """
     root = Path(root) if root is not None else DEFAULT_ROOT
     content_hash = bundle.combined_content_hash()
 
-    bad = check_invariants(bundle)
+    bad = check(bundle)
     if bad:
-        raise IngestError("夹具不变量未通过，拒绝落盘：\n  - " + "\n  - ".join(bad))
+        raise IngestError("数据不变量未通过，拒绝落盘：\n  - " + "\n  - ".join(bad))
 
     target = snapshot_dir(bundle.snapshot_id, root)
     rows = {name: int(len(frame)) for name, frame in bundle.tables.items()}
@@ -210,14 +218,30 @@ def ingest(
     warehouse: str | Path | None = None,
     universe: str = "fixture",
     con=None,
+    start: date | None = None,
+    end: date | None = None,
+    symbols: tuple[str, ...] | None = None,
 ) -> IngestResult:
-    """按 `--source` 分发。目前只有 `synthetic` 可用（供应商留空）。"""
-    if source != "synthetic":
-        raise IngestError(
-            f"数据源 {source!r} 尚未接入（VENDOR-TBD）。\n"
-            f"当前可用：source='synthetic'（合成夹具）。\n"
-            f"接入真实供应商见 LOCAL_DEPLOYMENT_PLAN.md 附录 A。"
+    """按 `--source` 分发到合成夹具或真实供应商。"""
+    if source == "synthetic":
+        if universe not in ("fixture", "synthetic"):
+            raise IngestError(f"未知 universe={universe!r}；当前仅支持 'fixture'。")
+        return ingest_bundle(generate(), root, warehouse=warehouse, source=source, con=con)
+
+    if source == "tushare":
+        bundle = build_tushare_bundle(
+            start=start or STUDY_START,
+            end=end or STUDY_END,
+            symbols=symbols,
         )
-    if universe not in ("fixture", "synthetic"):
-        raise IngestError(f"未知 universe={universe!r}；当前仅支持 'fixture'。")
-    return ingest_bundle(generate(), root, warehouse=warehouse, source=source, con=con)
+        tushare_root = Path(root) if root is not None else TUSHARE_ROOT
+        return ingest_bundle(
+            bundle, tushare_root, warehouse=warehouse, source=source, con=con,
+            check=check_real_invariants,
+        )
+
+    raise IngestError(
+        f"数据源 {source!r} 尚未接入（VENDOR-TBD）。\n"
+        f"当前可用：source='synthetic'（合成夹具）、source='tushare'（境内 ETF）。\n"
+        f"接入其它供应商见 LOCAL_DEPLOYMENT_PLAN.md 附录 A。"
+    )
