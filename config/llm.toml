@@ -17,7 +17,9 @@ kind = "cloud"
 name = "anthropic"
 
 # 模型 id。**必填**，否则 model_id 会拼成 "anthropic/" 而不可用。
-model = "claude-sonnet-4-5"
+# 2026-10-02 改：claude-sonnet-4-5 在本中转不存在（实际被回落到推理模型 deepseek-flash），
+# 改为中转实际提供的 deepseek-v4-pro。
+model = "deepseek-v4-pro"
 
 # 【凭据】这里填**环境变量名**（不是 key 本身）。
 # 常见取值：ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / OPENAI_API_KEY
