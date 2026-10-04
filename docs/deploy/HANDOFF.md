@@ -9,7 +9,7 @@
 ## 1. 一句话状态
 
 **P5 进行中：P5.1–P5.5 已完成且验证；P5.6 已用真实研报跑通「Parse→Extract→agent 生成代码→校验」，但产出代码有实质语义偏差，且口径决策仍悬。**
-**数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2024，199.3 万根 bar）并完成对账修复。**
+**数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2024，199.3 万根 bar）并完成对账修复；数据已并入主项目 `D:\project\quant\data`。**
 （更新时间：2026-10-04；P5 全过程见 §7.7，tushare 回填见 §7.8）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
 
@@ -63,6 +63,7 @@
 | **打包**（P2 定） | 根项目改为 **`uv_build` 可编辑安装**（`[build-system]` + `module-root="src"`），故 `import quantlab` 可用；CLI 入口 `quantlab = quantlab.cli:main`。`uv.lock` 仅 1 行变化，**依赖零漂移** |
 | **测试栈**（P2 定） | **`unittest`**（全库统一，CLAUDE.md 二选一）。命令：`python -m unittest discover -t . -s tests` |
 | **夹具快照** | `data/bronze/synthetic/synth-v1-613c5986a898/`（gitignored，可确定性重建）；DuckDB 台账 `data/warehouse.duckdb`（**派生**，可重建） |
+| ⚠️ **数据路径解析** | 数据根按 `__file__` 相对解析（`orchestrator.py:43` / `db.py:25`）。**从 worktree 跑 ingest 会写到 worktree 自己的 `data/`，而非主项目**。canonical 数据目录 = `D:\project\quant\data`；跨 worktree 写数据务必用 `--out` / `--warehouse` 显式指向主项目 |
 | ⚠️ **DuckDB 并发**（P2 实测） | ① 写者对**其他进程**独占：写者持有时连**只读**也打不开 → 「单写多读」仅在**无活跃写者**时成立；② **同进程**内对同一库文件**不得**持有配置不同的连接（RO/RW）→ 用连接注入 |
 | ⚠️ **跑测试前** | 设 `PYTHONIOENCODING=utf-8`（否则中文断言信息在子进程里会 UnicodeDecodeError） |
 | 三环境 Python | 均 **3.12.13**（起点即通过，无需下调） |
@@ -385,6 +386,14 @@
 
 - 复权因子 `fund_adj` 未进契约快照（F.6 总收益待补）。
 - 宏观 / index 基准 / hk_basic / US / FX 仍走 futu/yfinance/宏观接口，属后续回填范围。
+
+### 数据位置迁移（2026-10-04）
+
+tushare 数据原先落在 worktree 的 `data/`（根因：数据根按 `__file__` 相对解析，见 §3），
+已并入主项目唯一数据目录 `D:\project\quant\data`：
+- Parquet 真相：`D:\project\quant\data\bronze\tushare\{tushare-02d1572bb0f220c7, tushare-704bee7c042ed05c}`（10 文件，sha256 校验 0 失配）。
+- 台账：6 行 tushare `ingest_runs` 已并入 `D:\project\quant\data\warehouse.duckdb`（共 13 行），`v_bars_latest` → `tushare-704bee7c042ed05c`。
+- worktree 侧 `data/bronze/tushare/` 与 `data/warehouse.duckdb` 已删。
 
 ---
 

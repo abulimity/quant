@@ -1919,3 +1919,27 @@ bars_daily 较上轮 +3624（即 8 只补回）
 本轮「对账 → 定位 → 修复 → 重跑 → 复核」闭环完成；`tushare-704bee7c042ed05c` 为当前修正快照，`tushare-02d1572bb0f220c7`（旧）保留但已被更正结果取代。
 
 ---
+
+## 数据位置迁移：从 worktree 并入主项目 `D:\project\quant\data`（2026-10-04）
+
+**现象**：tushare 快照落在 worktree `C:\Users\abulimity\orca\workspaces\quant\获取tushare数据\data\bronze\tushare\`，而非主项目 `D:\project\quant\data`。
+
+**根因（非 orca 设置问题）**：数据根路径按 `__file__` 相对解析——
+`orchestrator.py:43` `TUSHARE_ROOT = Path(__file__).resolve().parents[3] / "data/bronze/tushare"`、
+`db.py:25` `PROJECT_ROOT = Path(__file__).resolve().parents[3]`。
+git worktree 是独立物理检出，`parents[3]` 即 worktree 根 → 从 worktree 跑 ingest 就写 worktree 自己的 `data/`。主项目里已有的 `synthetic`/`futu` 是先前在主项目跑的，故分家。
+
+**迁移动作**：
+
+1. 复制两快照（10 文件）worktree → `D:\project\quant\data\bronze\tushare\`，sha256 逐文件校验 **0 失配**：
+   ```text
+   files=10 mismatches=0
+   ```
+2. 台账并入主仓库：从 worktree 仓库读 6 行 tushare `ingest_runs`，`INSERT OR REPLACE` 进 `D:\project\quant\data\warehouse.duckdb`。
+   主仓库 `ingest_runs` 共 **13 行**（7 synthetic + 6 tushare）；`v_bars_latest` 解析到 `tushare-704bee7c042ed05c`（修正快照）。
+   （前置：需先关闭 DBeaver 对主仓库的**写**连接，否则 Windows 独占锁使只读也打不开。）
+3. 清理 worktree 冗余：删 `data/bronze/tushare/` 与 `data/warehouse.duckdb`（台账已并入主仓库后即冗余）。
+
+**最终状态**：tushare 数据唯一落点 = `D:\project\quant\data\bronze\tushare\`（两快照，~49MB）；主仓库台账已登记。worktree 仅余 `data/bronze/synthetic/`（与主项目同 `snapshot_id` 的确定性重复，可删可留）。
+
+---
