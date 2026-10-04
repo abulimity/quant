@@ -17,6 +17,7 @@ dependencies = [
     "numpy>=2.5.3",
     "pandas>=3.0.6",
     "pyarrow>=25.0.1",
+    "tushare>=1.4.29",
     "tzdata>=2026.4",
 ]
 
