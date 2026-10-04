@@ -1,11 +1,11 @@
 """请求 futu OpenD 的日线历史 K 线（**不复权**）与**复权因子**，落成 bronze 不可变快照。
 
 用法（在仓库根目录执行）：
-    uv run --project envs/futu python envs/futu/fetch_history_kline.py [--limit N] [--delay 1.2] [--resume 上次manifest.json] [--start 2024-10-04] [--end 2026-10-04]
+    uv run --project envs/futu python envs/futu/fetch_history_kline.py [--limit N] [--delay 1.2] [--resume 上次manifest.json|latest] [--start 2024-10-04] [--end 2026-10-04]
 
 标的清单来源（四选一，优先级从高到低）：
     --codes HK.00700,HK.00005         显式代码列表
-    --resume 上一份 manifest.json      续跑：只抓上一批「失败/未尝试」的 code（正股额度 7 天分批用）
+    --resume 上一份 manifest.json|latest  续跑：只抓上一批「失败/未尝试」的 code；latest=自动取最新快照（额度 7 天分批用）
     --plate-snapshot PATH             从已有 plate_stock.parquet 读 `code` 列
     缺省                               内部调 get_plate_stock("HK.Fund")（默认全量）
 
@@ -23,6 +23,7 @@
         1) 历史K线 / 复权因子各「每30秒最多60次」（≈2 次/秒）——频率超限报「频率太高」。
         2) 正股历史K线额度「每7天100只」——额度打满后报「额度不足（100/100），7天后释放」。
       --delay 默认 1.2s（每只代码 2 个请求 ≈ 1.7 次/秒，留安全边际，规避第 1 道；第 2 道只能靠分批/升级）。
+    退出码：0=全部成功（或续跑无可重试）；1=部分失败（快照已落盘，下批 --resume 续跑）；2=硬故障（一个都没拉到/清单解析失败）。
 """
 
 from __future__ import annotations
@@ -96,6 +97,18 @@ def _is_empty_terminal(errs: list[str]) -> bool:
     return bool(errs) and all("空表" in e for e in errs)
 
 
+def _latest_manifest(data_root: Path) -> Path | None:
+    """data_root 下按快照目录名（即 UTC 时间戳，字典序=时间序）取最新 manifest.json；无则 None。"""
+    if not data_root.is_dir():
+        return None
+    candidates = [
+        d / "manifest.json"
+        for d in data_root.iterdir()
+        if d.is_dir() and (d / "manifest.json").is_file()
+    ]
+    return max(candidates, key=lambda p: p.parent.name) if candidates else None
+
+
 def _resolve_codes(args, quote_ctx) -> tuple[list[str], str, str | None, list[str]]:
     """确定本次要抓取的**全量 universe**（未按 --limit 截断）。
 
@@ -107,17 +120,23 @@ def _resolve_codes(args, quote_ctx) -> tuple[list[str], str, str | None, list[st
         return codes, "cli", None, []
 
     if args.resume:
-        p = Path(args.resume)
-        if p.is_dir():
-            p = p / "manifest.json"
-        if not p.exists():
-            print(f"resume manifest 不存在：{p}", file=sys.stderr)
-            return [], "resume", None, []
+        if args.resume == "latest":
+            p = _latest_manifest(Path(args.out))
+            if p is None:
+                print(f"resume latest：{Path(args.out)} 下没有任何 manifest.json，无法续跑。", file=sys.stderr)
+                return [], "resume_error", None, []
+        else:
+            p = Path(args.resume)
+            if p.is_dir():
+                p = p / "manifest.json"
+            if not p.exists():
+                print(f"resume manifest 不存在：{p}", file=sys.stderr)
+                return [], "resume_error", None, []
         try:
             manifest = _load_manifest(p)
         except (OSError, json.JSONDecodeError) as exc:
             print(f"resume manifest 读取/解析失败：{p}（{exc}）", file=sys.stderr)
-            return [], "resume", None, []
+            return [], "resume_error", None, []
         errors = manifest.get("errors", {})
         prev_full = [str(c) for c in manifest.get("universe", manifest.get("codes", []))]
         prev_attempted = [str(c) for c in manifest.get("codes", [])]
@@ -158,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--codes", help="显式代码列表，逗号分隔（优先级最高）")
     parser.add_argument("--plate-snapshot", help="从已有 plate_stock.parquet 读 code 列")
     parser.add_argument("--plate-code", default="HK.Fund")
-    parser.add_argument("--resume", help="从上一份 history_kline 的 manifest.json（或其快照目录）续跑：只重试上一批失败/未尝试的 code")
+    parser.add_argument("--resume", help="从上一份 history_kline 的 manifest.json（或其快照目录）续跑：只重试上一批失败/未尝试的 code；传 latest 自动取最新快照")
     parser.add_argument("--limit", type=int, default=None, help="只抓排序后前 N 只（默认全部）")
     parser.add_argument("--delay", type=float, default=1.2, help="每只代码之间的限频间隔秒数（默认 1.2，对应 futu「每30秒最多60次」；0 关闭）")
     parser.add_argument("--start", help="开始日期 YYYY-MM-DD（默认 end 往前 730 天）")
@@ -178,10 +197,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if not universe:
         quote_ctx.close()
+        if code_source == "resume_error":
+            return 2
         if code_source.startswith("resume"):
             print(f"无可重试 code：上一批已全部完成（空表终态 {len(empty_codes)} 只已排除）。", file=sys.stderr)
             return 0
-        return 1
+        return 2
 
     codes = universe[: args.limit] if args.limit else universe
 
@@ -225,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not kline_frames:
         print("全部代码拉取失败，拒绝落盘。", file=sys.stderr)
-        return 1
+        return 2
 
     kline_df = pd.concat(kline_frames, ignore_index=True)
     rehab_df = (

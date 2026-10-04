@@ -1879,3 +1879,30 @@ PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history
 ```
 
 ---
+
+### futu OpenD · `--resume latest` + 硬故障退出码 2（2026-10-04）
+
+**目的**：让 orca 定时任务用一条固定命令续跑、且只在「真故障」时告警——而非把预期的额度/限流部分失败也当故障。
+
+**实现**（`envs/futu/fetch_history_kline.py`）：
+- `--resume latest`：自动取 `--out` 下按快照目录名（=UTC 时间戳，字典序=时间序）排序的最新一份 `manifest.json`，无需每次手填上一批路径。
+- 退出码语义：`0`=全部成功（或续跑无可重试）；`1`=部分失败（快照已落盘，下批 `--resume` 续跑）；`2`=硬故障（一个都没拉到 / 清单解析失败）。
+- 新增 `resume_error` 来源标签，区分「续跑无可重试（→0）」与「resume manifest 缺失/解析失败 / latest 找不到快照（→2）」。
+- `main` 里「全部代码拉取失败，拒绝落盘」从 `return 1` 改为 `return 2`；`if not universe` 的非 resume 分支（plate_api/plate_snapshot 解析失败）也改为 `return 2`。
+
+**验证（离线，不连 OpenD）**：
+- [x] `_latest_manifest` 取到最新 `20261004_115547_925918/manifest.json`
+- [x] `--resume latest` → `source="resume:20261004_115547_925918"`、`pending=374`、`empty=["HK.02849","HK.03051"]`
+- [x] `--resume latest` 但 `--out` 无快照 → `resume_error`（→退出码 2）
+- [x] `--resume 不存在的manifest.json` → `resume_error`（→退出码 2）
+- [x] 源码静态断言两处 `return 2` 就位
+
+**orca 定时任务可用的一条固定命令**：
+
+```powershell
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history_kline.py --resume latest --limit 100
+```
+
+（退出码 2 才触发告警；额度/限流导致的部分失败退出码 1，静默等下一批。）
+
+---
