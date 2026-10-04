@@ -2036,3 +2036,117 @@ OK
 - `check_real_invariants` 在 ingest 内已通过（进程 exit 0，无结构红旗）。
 
 ---
+
+### E2E-A · 契约链端到端（sample-ma-cross，时序金叉/死叉）（2026-10-04）
+
+**目的**：落实 `docs/deploy/HANDOFF.md` §7.6 重估结论「规格为真相」。P5.6 的「能力域内 E2E」分两段：E2E-A（确定性契约链 `spec → spec2weights → 引擎`，手写规格，不含 LLM 解析层）与 E2E-B（论文 → spec 的 LLM 解析，`map_to_contract` 对 exit/cross 映射有缺口，待定）。本步先跑 E2E-A，零外部依赖、可重复。
+
+**执行**：
+
+```powershell
+# 新建测试文件
+#   tests/test_p5_ma_cross_e2e.py
+$env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m unittest tests.test_p5_ma_cross_e2e -v
+```
+
+**产出**：
+- `tests/test_p5_ma_cross_e2e.py` —— 6 项测试，4 组：
+  1. `TestSpecIsContractLegal`：手写规格过 P3.2 闸门（G4 无未来函数 / G5 回看够 / G9 有 entry）。
+  2. `TestSignalEventsMatchPaper`：`emit_signals` 的金叉 +1 / 死叉 −1 逐日等于手算穿越（`cross_above/below` 事件语义，独立 pandas 复算）。
+  3. `TestWeightsTimelineMatchesPaper`：权重时间线逐格对拍持仓状态；预热期无持仓。
+  4. `TestCrossOverEngineParity`：reference 消费完整交叉循环；backtrader 与 reference 在「一次建仓 + 清仓」形态上对拍（容差 1e-4）。
+
+**验证**：
+- [x] **6/6 通过**（约 5.7s），退出 `OK`。
+
+**诊断记录（首次失败 → 修正测试期望，非实现缺陷）**：
+- `test_weights_track_hold_state` 首跑失败：实际权重在金叉后第一个休市调仓日（2016-02-09）为 0，而我手算的裸持仓状态为 1。逐格排查确认 `position_state` 日频状态与手算**完全一致**（divergence=0）；分歧只在「权重时间线」投影。
+- 根因：标的 1（SYN-CN-A）无「监管停牌」，但合成日历里**交易所休市日**（春节/国庆等，共 167 天）`close=NaN`、`traded=False`。`emit_weights` 按 F.4.5 在休市调仓日不表达目标（权重 0）；`position_state` 则把休市视为「维持前值」。故「权重」=「状态 ∧ 可成交 ∧ 动量预热」，不是裸状态。
+- 修正：测试期望改为 `状态 ∧ tradable ∧ (closes.notna() & closes.shift(lookback).notna())`，逐格精确对拍（0 分歧）。`fresh` 门槛对标的不影响（仅 1 根 bar 为 False 且不落在调仓日）。
+
+**备注**：
+- 口径统一 `momentum_window = lookback = 60`（默认 63 会把 60–62 日出现的金叉多卡 3 日，见测试 docstring）。
+- 引擎间偏差容差 1e-4；`event_panel` 压缩变化点，避免 backtrader 连续重复目标触发 Margin（P5.5 已知 L1）。
+
+---
+
+### E2E-B · 受控 DSL + fail-closed parser（§P5.6a，三 V3 验收）（2026-10-04）
+
+**目的**：落实用户拍板的 E2E-B 设计 ——「用 prompt 把输出收敛到一个受控的 DSL/JSON
+（不是纯自然语言，也不是理想化假设），再写一个小 parser 消费这个 DSL。prompt 只负责
+逼出结构化，parser 只负责吃掉结构化，谁都不需要猜自然语言。」核心交付是 `quantlab.x2.dsl`
+这个**纯函数 parser**：合法 DSL → 合规 `StrategySpec`；非法 DSL → 明确拒绝（fail-closed），
+**不静默兜底**。语义保真归人工对拍（§7.6「规格为真相」：绝不因 `valid=True` 单独放行）。
+
+**产出文件**：
+- `src/quantlab/x2/dsl.py`（**新增**）—— 受控 DSL parser。白名单与 `emit.evaluate` 的
+  `_SUPPORTED_OPS` 一一对应；`dsl_to_spec` 解析信封（name/entry 必填/exit 可选/sizing/lookback），
+  缺 entry 直接抛 `DslParseError`（防「静默全现金」）；`DSL_SCHEMA` 作为 system prompt 单一真相。
+- `tests/test_p5_dsl.py`（**新增**）—— 20 项确定性测试，钉住三 V3。
+- `src/quantlab/x2/paper2spec.py`（**改**）—— `OP_ALIASES` 加 `cross_above/below`；新增
+  `_BINARY_OPS`：扁平映射器遇到二元/事件算子 **fail-closed 拒绝**（引导走 DSL 路径）；
+  `map_to_contract` 现在解析 `exit`（原先 `exit=None` 硬编码）；新增 `extract_dsl()`。
+- `envs/x2/entry.py`（**改**）—— 新增 `paper2dsl` 算子：`DSL_SCHEMA` 作 system、论文全文作
+  user，`litellm.completion(temperature=0.0)`；`_parse_json_content` 去 ```json 围栏、JSON 失败即报错；
+  key 从 `params.api_key_env` 指向的环境变量读（**不写进 job.json/result.json**）。
+- `src/quantlab/x2/__init__.py`（**改**）—— 导出 `DslParseError` / `dsl_to_spec` / `parse_dsl_node` / `DSL_SCHEMA` / `extract_dsl`。
+
+**执行与输出**：
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m unittest tests.test_p5_dsl -v
+# → Ran 20 tests in 4.134s  OK
+
+$env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m unittest tests.test_p5_paper2spec -v
+# → Ran 17 tests in 0.005s  OK（回归：exit/OP_ALIASES 改动无回归）
+
+$env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m quantlab.x2.llm --check
+# → usable: True（anthropic/deepseek-v4-pro；ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL 均已设置）
+```
+
+**验证（三 V3）**：
+
+- [x] **V3 #1** parser 接受合法 DSL → 合规 `StrategySpec`；非法 DSL → 明确拒绝。
+  `TestParserAccepts`（窗口自动 shift、cross_above 双子树、golden 建出参考树、过闸门、exit=null 合法）
+  + `TestParserRejects`（未知算子、缺 op、非对象节点、窗口非正整数、未知字段、二元 arity 错、args 非数组、
+  shift n<1、缺 entry、顶层非对象——均抛 `DslParseError`）。
+- [x] **V3 #2** `sample-ma-cross.md` 真跑一遍 prompt→DSL→parser→gate→`spec2weights`，
+  权重与 E2E-A 手写规格**逐格一致**。真实 LLM 产出见下，`weights_parity == "exact"`。
+- [x] **V3 #3** 语义偏离可见：`TestSemanticDeviationVisible` 证 `gt`/`lt` 结构合法被收下（parser 不猜语义），
+  但权重与参考 `cross_above/below` **最大绝对差 > 0.5**（可观测偏离），`needs_human_review` 标记被保留。
+  另有 `TestWhitelistSync` 钉住 `DSL_ALL_OPS == evaluate._SUPPORTED_OPS`（防超集导致发射期崩溃）。
+
+**真跑（真实 LLM 调用，非 mock）结果**：
+
+```json
+{
+  "extract_ok": true,
+  "model": "anthropic/deepseek-v4-pro",
+  "source": "text:sample-ma-cross.md", "source_chars": 778,
+  "dsl": {
+    "name": "MA Crossover Timing", "universe_assets": [],
+    "entry": {"op": "cross_above", "args": [{"op":"sma","field":"close","window":20},
+                                            {"op":"sma","field":"close","window":60}]},
+    "exit":  {"op": "cross_below", "args": [{"op":"sma","field":"close","window":20},
+                                            {"op":"sma","field":"close","window":60}]},
+    "sizing": {"top_n": 1, "rebalance": "W-MON"},
+    "lookback": 60, "needs_human_review": false
+  },
+  "parse_ok": true, "gate_passed": true, "gate_errors": [],
+  "entry_op": "cross_above", "exit_op": "cross_below",
+  "lookback": 60, "top_n": 1,
+  "weights_parity": "exact"
+}
+```
+
+**备注**：
+- LLM **一次即产出了语义正确的 DSL**（`cross_above`/`cross_below`，未偏离成 `gt`/`lt`），
+  说明 schema 里的「上穿用 cross_above，勿用 gt/lt 代替」约束有效；偏离场景由确定性测试兜底覆盖。
+- 论文 §2 未指定标的代码，故 `universe_assets=[]`，`universe=(1,)` 由调用方按内部 symbol_id 显式给出
+  （不猜映射，与 `map_to_contract` 同口径）。
+- `extract_dsl` 只传 `api_key_env`（环境变量**名**）+ `api_base`（URL，非凭据）经 job.json；
+  key 值由 x2 环境自身从环境变量读取，**不落盘**（CLAUDE.md 凭据纪律）。
+- 附带：`test_p5_paper2spec.py` 第 14 行 docstring 的 `SyntaxWarning: invalid escape '\\.'`
+  为**既有**问题（非本次改动引入），不在本步范围。
+
+---
