@@ -814,7 +814,7 @@ class BacktestRunner(Protocol):
   - [ ] **V3** 产出物**必须**通过 P3.2 的 lint 闸门才允许入库
   - [ ] **V3** 保留 `source_paper` 元信息（可追溯）
 - **完成定义**：样例可产出合规规格。
-- **已确认变更（见 P5.6a，已落地）**：提取层改为「自研 prompt→DSL + parser」，不再依赖 x2strategy 的 `paper2spec` 提取；本节 V2 样例以 P5.6a 的 DSL 契约为准。
+- **已确认变更（见 P5.6a）**：提取层改为「自研 prompt→DSL + parser」，不再依赖 x2strategy 的 `paper2spec` 提取；本节 V2 样例以 P5.6a 的 DSL 契约为准。
 
 ### P5.3 规格注册与闸门串联
 
@@ -845,15 +845,13 @@ class BacktestRunner(Protocol):
 
 ### P5.6 端到端验收
 
-**能力域内 E2E 分两段**：E2E-A（确定性契约链 `spec → spec2weights → 引擎`，手写规格）与 E2E-B（论文 → spec 的 LLM 提取层）。两者均已落地。
+**能力域内 E2E 分两段**：E2E-A（确定性契约链 `spec → spec2weights → 引擎`，手写规格）与 E2E-B（论文 → spec 的 LLM 提取层）。
 
-- **已落地 · E2E-A**：`tests/test_p5_ma_cross_e2e.py` 6/6 通过——手写规格过 P3.2 闸门 → `emit_signals` 逐日对拍手算金叉/死叉（`cross_above/below` 事件语义）→ 权重时间线逐格对拍持仓状态 → reference/backtrader 对拍（1e-4）。证据见 `docs/deploy/EVIDENCE.md` 的「E2E-A」章节。
-- **已落地 · E2E-B**：`src/quantlab/x2/dsl.py` 受控 DSL parser + `tests/test_p5_dsl.py` 20/20 通过——真跑 `sample-ma-cross.md` 经 prompt→DSL→parser→闸门→`spec2weights`，权重与 E2E-A 手写规格**逐格一致**（exact parity）；畸形 DSL fail-closed。证据见 `docs/deploy/EVIDENCE.md` 的「E2E-B」章节。
-- **验证（全链路，待 E2E-B 落地后一并勾选）**：
+- **验证（全链路）**：
   - [ ] **V2** 完整链路：样例论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 → bt 组合 → 报告，全程无人工改文件
   - [ ] **V4** 全链路重跑，结果在容差内一致
 
-#### P5.6a 论文 → spec 提取层重设计（E2E-B，**已确认并落地**）
+#### P5.6a 论文 → spec 提取层重设计（E2E-B，**已确认**）
 
 **背景**：HANDOFF §7.6 重估判定「规格为真相 A」。现有 `map_to_contract` 对 x2strategy 27 字段 `logic_pipeline` 做保守映射，实测（§7.7 H1–H6）产出 `valid=True` 却语义静默偏离（HRP→等权、rank→原始动量…）。根因是「解析自由格式表达式」这一层既脆弱又不可审计。本方案把它换成「**受控 DSL + fail-closed parser**」。
 
@@ -885,10 +883,10 @@ class BacktestRunner(Protocol):
 
 **（4）提取环节归属（随本方案确认）**：改用**我们自己的 prompt→DSL**（在 x2 环境，LLM/litellm 在那儿），不再走 x2strategy 的 `paper2spec`；x2strategy 的价值保留在 codegen（横截面/矩阵等超出能力域部分）。代价：自维护 prompt + DSL schema。
 
-**验证（本节 Gate，已勾选）**：
-  - [x] **V3** parser 接受合法 DSL → 合规 `StrategySpec`；畸形 DSL（未知算子/缺字段/非 schema）→ **明确拒绝**，无静默 fallback
-  - [x] **V3** `sample-ma-cross.md` 真跑一次 prompt→DSL→parser→闸门→`spec2weights`，产出的权重与 E2E-A 手写规格**行为一致**（对拍）
-  - [x] **V3** 语义偏离可见：LLM 把 `cross_above` 写成 `gt` 或窗口写错 → 产出物经 `needs_human_review` 标记，**不静默入库**
+**验证（本节 Gate）**：
+  - [ ] **V3** parser 接受合法 DSL → 合规 `StrategySpec`；畸形 DSL（未知算子/缺字段/非 schema）→ **明确拒绝**，无静默 fallback
+  - [ ] **V3** `sample-ma-cross.md` 真跑一次 prompt→DSL→parser→闸门→`spec2weights`，产出的权重与 E2E-A 手写规格**行为一致**（对拍）
+  - [ ] **V3** 语义偏离可见：LLM 把 `cross_above` 写成 `gt` 或窗口写错 → 产出物经 `needs_human_review` 标记，**不静默入库**
 
 **完成定义**：`sample-ma-cross.md` 经「prompt→DSL→parser→闸门→权重」产出与手写规格一致的合规 spec，且畸形输入 fail-closed。
 

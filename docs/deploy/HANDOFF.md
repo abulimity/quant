@@ -18,7 +18,7 @@
 > 回归用例 `tests/test_p5_bt_halt.py`；另修两处**静默**问题（bt 整数股取整、参考内核收盘
 > 诊断口径自相矛盾）。见 §7.4 与 `parity_report.md` §4.5.2。
 
-> ⛔ **当前卡点（P5.6）——不是 bug，是口径未定 + 能力域不相交**：
+> ✅ **已解决（2026-10-04）**：以下「⛔ 当前卡点（P5.6）」是 E2E-B 落地前的**历史记录**——口径已确认「规格为真相 A」，能力域内 E2E 两段均已落地（见 §7.10）。保留此块仅作「为什么选 A」的判据：
 > - 真实 `paper2spec` 产出是**带下标的伪代码 / 矩阵 / 因子**（实测两次），
 >   `map_to_contract` 只认理想化的 `name(params)` → **映射不出 entry**；
 > - x2 **旗舰样例 UPSA** 是**组合优化**（`output_type: matrix`、`long_short`），
@@ -57,13 +57,13 @@
 | D 盘剩余 | ≈ 275 GiB ✅ |
 | **管理员权限** | **无** —— 需要管理员的操作会失败，须记录为 `SKIPPED(no admin)` 并交人工 |
 | 长路径 | `LongPathsEnabled=0`，**已人工豁免**（`GateP0.long_paths=WAIVED`） |
-| 数据供应商 | **cn_etf 已接 tushare**（境内 ETF 全量回填完成）；hk/us/fx 仍留空，其余用合成夹具 |
+| 数据供应商 | **cn_etf = tushare 全量回填**（2861 只）；**macro/index = tushare 回填**；**hk = 名单（tushare_hk）+ 行情 bronze（futu，未 normalize）**；us/fx 仍留空；其余用合成夹具 |
 | 网络 | 未验证数据接口可用性；**`raw.githubusercontent.com` 在本机不可达**（litellm 成本表拉取超时） |
 | **环境边界**（P1 定） | core（根）/ `envs/vbt` / `envs/x2`，**各自独立 `uv.lock`**；**backtrader 归 core**，未建 `envs/btrader` |
 | **打包**（P2 定） | 根项目改为 **`uv_build` 可编辑安装**（`[build-system]` + `module-root="src"`），故 `import quantlab` 可用；CLI 入口 `quantlab = quantlab.cli:main`。`uv.lock` 仅 1 行变化，**依赖零漂移** |
 | **测试栈**（P2 定） | **`unittest`**（全库统一，CLAUDE.md 二选一）。命令：`python -m unittest discover -t . -s tests` |
 | **夹具快照** | `data/bronze/synthetic/synth-v1-613c5986a898/`（gitignored，可确定性重建）；DuckDB 台账 `data/warehouse.duckdb`（**派生**，可重建） |
-| ⚠️ **数据路径解析** | 数据根按 `__file__` 相对解析（`orchestrator.py:43` / `db.py:25`）。**从 worktree 跑 ingest 会写到 worktree 自己的 `data/`，而非主项目**。canonical 数据目录 = `D:\project\quant\data`；跨 worktree 写数据务必用 `--out` / `--warehouse` 显式指向主项目 |
+| ⚠️ **数据路径解析** | 数据根/runs/envs 统一走 `quantlab.paths`（`DATA_ROOT`/`RUNS_DIR`/`ENVS_DIR`/`DUCKDB_PATH`）；`PROJECT_ROOT` 默认 = 检出根，用环境变量 `QUANT_ROOT` 覆盖为 canonical 根 `D:\project\quant`（**PR#2 `811f0c2`**，见 CLAUDE.md「使用 orca 时的操作规范」）。CLI 仍可用 `--out`/`--warehouse` 显式覆盖 |
 | ⚠️ **DuckDB 并发**（P2 实测） | ① 写者对**其他进程**独占：写者持有时连**只读**也打不开 → 「单写多读」仅在**无活跃写者**时成立；② **同进程**内对同一库文件**不得**持有配置不同的连接（RO/RW）→ 用连接注入 |
 | ⚠️ **跑测试前** | 设 `PYTHONIOENCODING=utf-8`（否则中文断言信息在子进程里会 UnicodeDecodeError） |
 | 三环境 Python | 均 **3.12.13**（起点即通过，无需下调） |
@@ -161,18 +161,12 @@
 
 ---
 
-## 6. 下一步：P5（x2strategy 集成）/ P6（组合与报告）
+## 6. 下一步：剩余 P5.6 全链路 + P6（组合与报告）
 
-> ⚠️ **执行前先确认**：附录 F.4.4/F.8 的「收盘成交」与正文 §P4.5 的「T+1 开盘成交」
-> 冲突，本次按「以正文为准」取 **T+1 开盘**。若你希望改口径，需回改
-> `engines/execution.py` 的 `fill_at`（改动集中、影响面小）。
-
-| 步骤 | 要点 |
-| --- | --- |
-| P5.1 | `config/llm.toml` 空模板；未配置时**明确报错**，不得静默用付费默认 |
-| P5.2 | `paper2spec` 封装（经桥调 x2 环境）；产出**必须过 P3.2 闸门**才可入库 |
-| P6.x | 组合与报告；**年化口径按所用日历推导并全局统一**（不写死 365/252） |
-| 🚦 | **Gate P5 / Gate P6** |
+> **P5 主体已交付**：P5.1–P5.5 与能力域内 E2E-A/E2E-B 均已落地（见 §7.10）。
+> 剩余两项：
+> ① **全链路六段**（P5.6 的 V2/V4）——论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 → bt 组合 → 报告，全程无人工改文件，尚未串起来；
+> ② **P6 组合与报告**——年化口径按所用日历推导并全局统一（不写死 365/252）。
 
 > **P4 已交付可直接复用**：`engines.base.load_bundle_from_fixture()`（夹具→回测输入）、
 > `engines.base.get_runner()`（按名取引擎）、`engines.execution`（撮合语义真值）、
@@ -410,7 +404,7 @@
 
 ### 数据位置迁移（2026-10-04）
 
-tushare 数据原先落在 worktree 的 `data/`（根因：数据根按 `__file__` 相对解析，见 §3），
+tushare 数据原先落在 worktree 的 `data/`（根因：数据根按 `__file__` 相对解析；该根因已由 PR#2 `quantlab.paths`/`QUANT_ROOT` 修复，见 §3），
 已并入主项目唯一数据目录 `D:\project\quant\data`：
 - Parquet 真相：`D:\project\quant\data\bronze\tushare\{tushare-02d1572bb0f220c7, tushare-704bee7c042ed05c}`（10 文件，sha256 校验 0 失配）。
 - 台账：6 行 tushare `ingest_runs` 已并入 `D:\project\quant\data\warehouse.duckdb`（共 13 行），`v_bars_latest` → `tushare-704bee7c042ed05c`。
@@ -504,6 +498,37 @@ E2E-B（论文 → spec 的 LLM 提取层，用户拍板「受控 DSL + fail-clo
 - **全链路六段**（P5.6 的 V2/V4）：论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 →
   bt 组合 → 报告，全程无人工改文件 —— **尚未串起来**（本次只到 paper→spec→weights 对拍）。
 - **横截面算子族 #14**（`rank`/`cross_sectional_rank`/`condition`）——真实研报属此域，单独立项。
+
+---
+
+## 7.11 PR #2 / PR #3 提交总结（2026-10-04）
+
+> 两次远程 PR 已并入 `main`：PR #2 `034ef24`（解释项目概念）、PR #3 `c0129a5`（获取港股数据），本地经 `pull: Fast-forward` 并入，本会话工作未受影响。
+
+### PR #2 · 引入 canonical 项目根（`811f0c2`）
+
+**一句话**：数据 / runs / envs 与「代码检出根」解耦，解决 orca worktree 里 agent 把产出物写进工作树（gitignored、清理即丢）的问题。
+
+- 新增 `src/quantlab/paths.py` 单一事实来源：`CHECKOUT_ROOT`（git 溯源，= 检出/工作树根）vs `PROJECT_ROOT`（canonical，环境变量 `QUANT_ROOT` 可覆盖，默认 = CHECKOUT_ROOT）；派生 `DATA_ROOT`/`RUNS_DIR`/`DUCKDB_PATH`/`ENVS_DIR`/`CONFIG_DIR`。
+- 6 个核心模块改用该入口：`engines/base.py`、`engines/bridge.py`、`fixtures/synth.py`、`ingest/orchestrator.py`、`store/db.py`、`x2/llm.py`；5 个 envs 脚本（futu `fetch_plate_stock.py`、x2 `_diag_extract_l2.py`/`_llm_probe.py`/`run_paper2spec.py`/`run_x2_extra_tests.py`）。
+- CLAUDE.md 新增「使用 orca 时的操作规范（强制）」：产出物落点、`QUANT_ROOT` 指主检出、跑代码用主检出环境不重建 `.venv`、脚本归属、DuckDB 单写串行。
+- **影响**：§3 的「数据路径解析」旧机制（`__file__` 相对 + `--out`/`--warehouse`）已被 `quantlab.paths` + `QUANT_ROOT` 取代（§3 已同步更新）。
+
+### PR #3 · futu OpenD 港股 K 线 bronze 拉取（`4644489`→`a7cab72` + `345b0ba`）
+
+**一句话**：接入 futu OpenD，拉取港股日线历史 K 线（不复权原始价 + 复权因子），落 bronze 原始快照；配合 `--resume` 分批续抓 + runbook。
+
+| commit | 内容 |
+| --- | --- |
+| `4644489` | 新增 `envs/futu/fetch_history_kline.py`：`request_history_kline(autype=NONE)` 不复权 + `get_rehab` 复权因子，落 bronze 快照（`kline.parquet`/`rehab.parquet`/`manifest.json`） |
+| `a59603f` | 修 `get_last_error` 崩溃 + 限流 `--delay 1.2`；记录全量拉取部分成功证据 |
+| `96b539b` | 加 `--resume` 续抓，分 5 批拉全 472 只（每 7 天一批） |
+| `a7cab72` | `--resume latest` 自动取最新快照 + 硬故障退出码 2 |
+| `345b0ba` | `LOCAL_DEPLOYMENT_PLAN.md` 附录 A.1 记录 runbook（退出码 0/1/2 语义 + 定时续抓命令） |
+
+- **仅 bronze 原始快照**，尚未 normalize 到 `bars_daily` 契约（`symbol_map`/currency 未配，P2.4 适配器留后续）。
+- **两道 futu 限额**：① 历史 K 线 / 复权因子各「每 30 秒 60 次」→ `--delay 1.2s`；② 正股 K 线「每 7 天 100 只」→ 分批。
+- 首份快照 `20261004_115547_925918` 已存在，续抓命令见附录 A.1。
 
 ---
 

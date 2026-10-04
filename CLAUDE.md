@@ -74,6 +74,7 @@ DuckDB 单写多读：多个 agent 并发写数据要**串行**（一次只有�
 - 配置用 TOML + 标准库 `tomllib`；凭据一律走环境变量，**不得写入仓库**。
 - 测试放 `tests/`，用 `unittest` 或 `pytest`（选一个并全库统一）。
 - 所有可执行入口含 `if __name__ == "__main__":` 保护（Windows 是 `spawn`，numba/vectorbt 必需）。
+- Windows 跑测试前先设 `PYTHONIOENCODING=utf-8`（否则中文断言信息在子进程里会 UnicodeDecodeError）。
 
 ## 文档
 
