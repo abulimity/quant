@@ -31,7 +31,28 @@ _PREID_KEYS: dict[str, list[str]] = {
     "symbols": ["symbol_id"],
     "bars_daily": ["symbol_id", "ts"],
     "corporate_actions": ["symbol_id", "ex_date", "kind"],
+    "fund_adj": ["symbol_id", "ts"],
+    "index_symbols": ["ts_code"],
+    "index_daily": ["ts_code", "ts"],
+    "hk_symbols": ["ts_code"],
+    "macro_series": ["series_id", "ts"],
 }
+
+# 基准指数（curated）：覆盖主流宽基/规模/风格指数，供报告基准（F.10）使用。
+# fund_basic.benchmark 是自由文本描述（实测 1316 种，如「沪深300指数收益率×100%」），
+# 无法可靠反查 ts_code，故用固定清单；构建时 fail-closed 校验清单内代码都在 index_basic 内。
+_BENCHMARK_INDICES: tuple[str, ...] = (
+    "000001.SH",  # 上证指数
+    "000016.SH",  # 上证50
+    "000010.SH",  # 上证180
+    "000300.SH",  # 沪深300
+    "000905.SH",  # 中证500
+    "000852.SH",  # 中证1000
+    "000688.SH",  # 科创50
+    "399001.SZ",  # 深证成指
+    "399006.SZ",  # 创业板指
+    "399005.SZ",  # 中小100
+)
 
 
 def _utcnow() -> datetime:
@@ -97,16 +118,28 @@ def build_tushare_bundle(
         FetchSpec(dataset="corporate_actions", start=start, end=end, symbols=codes))
     ca = div_src.normalize(raw_div)
 
+    # 4b) 复权因子（同一标的池；F.6 总收益交叉核对用，非契约 raw 表）
+    adj_src = TushareSource(
+        dataset="fund_adj", token=token, symbol_map=symbol_map,
+        rate_limit_delay=rate_limit_delay,
+    )
+    raw_adj = adj_src.fetch(
+        FetchSpec(dataset="fund_adj", start=start, end=end, symbols=codes))
+    fund_adj = adj_src.normalize(raw_adj)
+
     # 5) 先由「未打标」契约帧求 snapshot_id，再回填 source/downloaded_at/snapshot_id
     snapshot_id = _derive_snapshot_id("tushare", {
         "symbols": symbols_frame, "bars_daily": bars, "corporate_actions": ca,
+        "fund_adj": fund_adj,
     })
     downloaded_at = _utcnow()
 
     bars = bars.assign(source="tushare", downloaded_at=downloaded_at, snapshot_id=snapshot_id)
     ca = ca.assign(source="tushare", snapshot_id=snapshot_id)
+    fund_adj = fund_adj.assign(source="tushare", snapshot_id=snapshot_id)
 
-    tables = {"symbols": symbols_frame, "bars_daily": bars, "corporate_actions": ca}
+    tables = {"symbols": symbols_frame, "bars_daily": bars,
+              "corporate_actions": ca, "fund_adj": fund_adj}
     bundle = FixtureBundle(snapshot_id=snapshot_id, tables=tables)
     bundle.meta = {
         "snapshot_id": snapshot_id,
@@ -123,18 +156,142 @@ def build_tushare_bundle(
     return bundle
 
 
+def _assemble_bundle(
+    source: str,
+    tables: dict[str, pd.DataFrame],
+    tag_spec: dict[str, tuple[str, ...]],
+    extra_meta: dict,
+) -> FixtureBundle:
+    """通用收尾：由「未打标」契约帧派生 snapshot_id，再按 tag_spec 回填 source 等列。
+
+    与 `build_tushare_bundle` 的收尾一致；`tag_spec` 指定每张表回填哪些审计列
+    （子集 of {"source", "downloaded_at", "snapshot_id"}）。名单/目录类表不回填。
+    """
+    snapshot_id = _derive_snapshot_id(source, tables)
+    downloaded_at = _utcnow()
+    tagged: dict[str, pd.DataFrame] = {}
+    for name, df in tables.items():
+        df = df.copy()
+        for col in tag_spec.get(name, ()):
+            if col == "source":
+                df = df.assign(source=source)
+            elif col == "downloaded_at":
+                df = df.assign(downloaded_at=downloaded_at)
+            elif col == "snapshot_id":
+                df = df.assign(snapshot_id=snapshot_id)
+        tagged[name] = df
+    bundle = FixtureBundle(snapshot_id=snapshot_id, tables=tagged)
+    bundle.meta = {
+        "snapshot_id": snapshot_id,
+        "source": source,
+        "downloaded_at": downloaded_at.isoformat(),
+        **extra_meta,
+        "row_counts": {n: int(len(d)) for n, d in tagged.items()},
+        "content_hashes": bundle.content_hashes(),
+        "combined_content_hash": bundle.combined_content_hash(),
+    }
+    return bundle
+
+
+def build_tushare_index_bundle(
+    *,
+    start: date,
+    end: date,
+    token: str | None = None,
+    rate_limit_delay: float = 0.2,
+) -> FixtureBundle:
+    """抓取 tushare 指数名单（index_basic 全量）+ 基准指数日线（curated 清单）。"""
+    cat_src = TushareSource(dataset="index_symbols", token=token,
+                            rate_limit_delay=rate_limit_delay)
+    raw_cat = cat_src.fetch(FetchSpec(dataset="index_symbols", start=start, end=end))
+    catalog = cat_src.normalize(raw_cat)
+
+    # fail-closed：curated 基准必须在 index_basic 名单内，否则立即报错（不浪费 index_daily 调用）
+    known = set(catalog["ts_code"].astype(str))
+    missing = [c for c in _BENCHMARK_INDICES if c not in known]
+    if missing:
+        raise ContractError(f"tushare: 基准指数未在 index_basic 名单内: {missing}")
+
+    daily_src = TushareSource(dataset="index_daily", token=token,
+                              rate_limit_delay=rate_limit_delay)
+    raw_daily = daily_src.fetch(FetchSpec(
+        dataset="index_daily", start=start, end=end, symbols=_BENCHMARK_INDICES))
+    daily = daily_src.normalize(raw_daily)
+
+    return _assemble_bundle(
+        "tushare_index",
+        {"index_symbols": catalog, "index_daily": daily},
+        {"index_daily": ("source", "snapshot_id")},
+        {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "benchmarks": list(_BENCHMARK_INDICES),
+            "availability_note": TushareSource.availability_note,
+        },
+    )
+
+
+def build_tushare_hk_bundle(
+    *,
+    token: str | None = None,
+    rate_limit_delay: float = 0.2,
+) -> FixtureBundle:
+    """抓取 tushare 港股证券名单（hk_basic 全量；行情由 futu 供，此处仅元数据）。"""
+    src = TushareSource(dataset="hk_symbols", token=token,
+                        rate_limit_delay=rate_limit_delay)
+    raw = src.fetch(FetchSpec(
+        dataset="hk_symbols", start=date(1970, 1, 1), end=date(2100, 1, 1)))
+    hk = src.normalize(raw)
+    return _assemble_bundle(
+        "tushare_hk",
+        {"hk_symbols": hk},
+        {},
+        {"availability_note": TushareSource.availability_note},
+    )
+
+
+def build_tushare_macro_bundle(
+    *,
+    start: date,
+    end: date,
+    token: str | None = None,
+    rate_limit_delay: float = 0.2,
+) -> FixtureBundle:
+    """抓取 tushare 宏观最小集（cn_cpi/cn_ppi/cn_gdp/shibor）→ 契约 macro_series。"""
+    src = TushareSource(dataset="macro_series", token=token,
+                        rate_limit_delay=rate_limit_delay)
+    raw = src.fetch(FetchSpec(dataset="macro_series", start=start, end=end))
+    macro = src.normalize(raw)
+    return _assemble_bundle(
+        "tushare_macro",
+        {"macro_series": macro},
+        {"macro_series": ("source", "snapshot_id")},
+        {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "availability_note": (
+                "宏观 available_utc = 观测期末 + 发布滞后（CPI/PPI 15d、GDP 30d、"
+                "shibor 1d，F.2 保守口径）。"),
+        },
+    )
+
+
 def check_real_invariants(bundle: FixtureBundle) -> list[str]:
     """真实数据的**通用**自洽性检查（不依赖夹具特有的 traded/TRI/fx 对拍）。
 
     返回违反项列表；空列表 = 通过。与 `fixtures/synth.check_invariants` 并列，
-    覆盖「坏数据」的结构性红旗，供 ingest 前拒绝落盘。
+    覆盖「坏数据」的结构性红旗，供 ingest 前拒绝落盘。只检查 bundle 里**存在**的表。
     """
     bad: list[str] = []
-    bars = bundle.tables["bars_daily"]
-    ca = bundle.tables.get("corporate_actions")
-    symbols = bundle.tables["symbols"]
+    tables = bundle.tables
+    bars = tables.get("bars_daily")
+    ca = tables.get("corporate_actions")
+    symbols = tables.get("symbols")
+    fund_adj = tables.get("fund_adj")
+    index_daily = tables.get("index_daily")
+    macro = tables.get("macro_series")
 
-    if len(bars):
+    if bars is not None and len(bars):
         for col in ("open", "high", "low", "close"):
             if (bars[col] <= 0).any():
                 bad.append(f"bars_daily 非正价格: {col}")
@@ -157,7 +314,40 @@ def check_real_invariants(bundle: FixtureBundle) -> list[str]:
         if (pd.to_datetime(ca["available_utc"]) > pd.to_datetime(ca["ex_date"])).any():
             bad.append("corporate_actions 存在 available_utc > ex_date（先除权后公告）")
 
-    if len(symbols) and bool(symbols["symbol_id"].duplicated().any()):
+    if symbols is not None and len(symbols) and bool(symbols["symbol_id"].duplicated().any()):
         bad.append("symbols 存在重复 symbol_id")
+
+    if fund_adj is not None and len(fund_adj):
+        if (fund_adj["adj_factor"] <= 0).any():
+            bad.append("fund_adj 存在非正复权因子")
+        dup = int(fund_adj.duplicated(subset=["symbol_id", "ts"]).sum())
+        if dup:
+            bad.append(f"fund_adj 重复 (symbol_id, ts) {dup} 行")
+
+    if index_daily is not None and len(index_daily):
+        for col in ("open", "high", "low", "close"):
+            if (index_daily[col] <= 0).any():
+                bad.append(f"index_daily 非正价格: {col}")
+        lo = index_daily[["open", "close"]].min(axis=1)
+        hi = index_daily[["open", "close"]].max(axis=1)
+        if (index_daily["low"] > lo).any():
+            bad.append("index_daily 存在 low > min(open, close)")
+        if (index_daily["high"] < hi).any():
+            bad.append("index_daily 存在 high < max(open, close)")
+        dup = int(index_daily.duplicated(subset=["ts_code", "ts"]).sum())
+        if dup:
+            bad.append(f"index_daily 重复 (ts_code, ts) {dup} 行")
+
+    if macro is not None and len(macro):
+        dup = int(macro.duplicated(subset=["series_id", "ts"]).sum())
+        if dup:
+            bad.append(f"macro_series 重复 (series_id, ts) {dup} 行")
+        if (pd.to_datetime(macro["available_utc"]) < pd.to_datetime(macro["ts"])).any():
+            bad.append("macro_series 存在 available_utc < ts（未来函数）")
+
+    for name in ("index_symbols", "hk_symbols"):
+        frame = tables.get(name)
+        if frame is not None and len(frame) and bool(frame["ts_code"].duplicated().any()):
+            bad.append(f"{name} 存在重复 ts_code")
 
     return bad

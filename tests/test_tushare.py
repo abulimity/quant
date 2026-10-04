@@ -196,7 +196,7 @@ class TestFailClosed(unittest.TestCase):
 
     def test_unknown_dataset_raises(self) -> None:
         with self.assertRaises(ContractError):
-            TushareSource(dataset="fund_adj")
+            TushareSource(dataset="not_a_real_dataset")
 
     def test_fetch_missing_token_raises(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):

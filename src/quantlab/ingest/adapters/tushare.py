@@ -7,6 +7,11 @@
     · `symbols`            ← `fund_basic(market=E)`（境内 ETF 名单，含退市，排除 REITs）
     · `bars_daily`         ← `fund_daily`（**未复权**日线）
     · `corporate_actions`  ← `fund_div`（基金分红；拆分罕见，由复权因子兜底）
+    · `fund_adj`           ← `fund_adj`（复权因子，**非契约** raw 表，F.6 交叉核对）
+    · `index_symbols`      ← `index_basic`（指数名单，**非契约** raw 表）
+    · `index_daily`        ← `index_daily`（基准指数日线，**非契约** raw 表）
+    · `hk_symbols`         ← `hk_basic`（港股证券名单，**非契约** raw 表；行情走 futu）
+    · `macro_series`       ← `cn_cpi`/`cn_ppi`/`cn_gdp`/`shibor`（契约 `macro_series`）
 
 复权口径（F.6，必须披露）：
     · `fund_daily.close` 是**未复权**价；总收益由 `corporate_actions`（分红）经
@@ -29,7 +34,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from importlib import import_module
 
 import pandas as pd
@@ -39,7 +44,15 @@ from quantlab.ingest.base import CONTRACT, ContractError, FetchSpec, validate_no
 
 NAME = "tushare"
 
-DATASETS: tuple[str, ...] = ("symbols", "bars_daily", "corporate_actions")
+DATASETS: tuple[str, ...] = (
+    "symbols", "bars_daily", "corporate_actions", "fund_adj",
+    "index_symbols", "index_daily", "hk_symbols", "macro_series",
+)
+
+# 非契约的「原始 bronze 表」：normalize() **不做** CONTRACT 校验（schema 无对应契约列）。
+# fund_adj 是 F.6 复权因子交叉核对；index_*/hk_* 是名单/基准序列，供下游按需取用。
+_RAW_DATASETS: frozenset[str] = frozenset(
+    {"fund_adj", "index_symbols", "index_daily", "hk_symbols"})
 
 # fund_basic 中需**排除**的基金类型（用户已确认：排除 REITs，其余全收）
 _EXCLUDED_FUND_TYPES = ("REITs",)
@@ -79,6 +92,22 @@ _DEFAULT_RATE_LIMIT_DELAY = 0.2
 # exchange-calendars 应取交易日为准，见 LOCAL_DEPLOYMENT_PLAN.md §六）。
 _FUND_DAILY_EMPTY_ATTEMPTS = 2
 _FUND_DAILY_EMPTY_DELAY = 0.5
+
+# 宏观最小集（LOCAL_DEPLOYMENT_PLAN.md §一：cn_cpi/cn_ppi/cn_gdp/shibor）。
+# 每个元素：(series_id, unit, tushare接口, 取值列, 时间列, 时间格式, 发布滞后天数)。
+# 发布滞后用于 available_utc = 观测期末 + 滞后天（F.2 保守口径，披露如下）：
+#   · CPI/PPI 月频：统计局次月中旬发布 → 滞后 15 天
+#   · GDP 季频：次季首月末发布 → 滞后 30 天
+#   · shibor 日频：当日收盘可得 → 滞后 1 天
+_MACRO_SERIES: tuple[tuple[str, str, str, str, str, str, int], ...] = (
+    ("CN_CPI_YOY",   "percent", "cn_cpi",  "nt_yoy",  "month",   "month",   15),
+    ("CN_PPI_YOY",   "percent", "cn_ppi",  "ppi_yoy", "month",   "month",   15),
+    ("CN_GDP_YOY",   "percent", "cn_gdp",  "gdp_yoy", "quarter", "quarter", 30),
+    ("CN_SHIBOR_3M", "percent", "shibor",  "3m",      "date",    "day",      1),
+)
+
+# shibor 单次最多返回 2000 行（日频 ~8 年）；研究窗口 10 年需向前翻页补齐。
+_SHIBOR_PAGE_CAP = 2000
 
 
 def assign_symbol_ids(raw_basic: pd.DataFrame) -> dict[str, int]:
@@ -184,6 +213,16 @@ class TushareSource:
             return self._fetch_per_symbol(pro, spec, "fund_daily", allow_empty=False)
         if dataset == "corporate_actions":
             return self._fetch_per_symbol(pro, spec, "fund_div", allow_empty=True)
+        if dataset == "fund_adj":
+            return self._fetch_per_symbol(pro, spec, "fund_adj", allow_empty=False)
+        if dataset == "index_symbols":
+            return self._fetch_index_basic(pro)
+        if dataset == "index_daily":
+            return self._fetch_per_symbol(pro, spec, "index_daily", allow_empty=False)
+        if dataset == "hk_symbols":
+            return self._fetch_hk_basic(pro)
+        if dataset == "macro_series":
+            return self._fetch_macro(pro, spec)
         raise AssertionError("unreachable")
 
     def _fetch_symbols(self, pro) -> pd.DataFrame:
@@ -192,6 +231,20 @@ class TushareSource:
         self._throttle()
         if raw is None or len(raw) == 0:
             raise ContractError(f"{NAME}: fund_basic(market=E) 返回空")
+        return raw
+
+    def _fetch_index_basic(self, pro) -> pd.DataFrame:
+        raw = pro.index_basic()
+        self._throttle()
+        if raw is None or len(raw) == 0:
+            raise ContractError(f"{NAME}: index_basic() 返回空")
+        return raw
+
+    def _fetch_hk_basic(self, pro) -> pd.DataFrame:
+        raw = pro.hk_basic()
+        self._throttle()
+        if raw is None or len(raw) == 0:
+            raise ContractError(f"{NAME}: hk_basic() 返回空")
         return raw
 
     def _call_with_retry(self, fn, code: str, *, attempts: int = 4, base_delay: float = 1.0):
@@ -242,7 +295,9 @@ class TushareSource:
         parts: list[pd.DataFrame] = []
         total = len(spec.symbols)
         for i, code in enumerate(spec.symbols, 1):
-            if api == "fund_daily":
+            if api in ("fund_daily", "fund_adj", "index_daily"):
+                # 逐标的日线：fund_daily/fund_adj/index_daily 均按 (ts_code, 日期窗口) 取，
+                # 且都可能偶发瞬时空表 → 统一走空表重试
                 raw = self._fetch_fund_daily(fn, code, start, end)
             else:  # fund_div：一次取全量，再裁剪到 [start, end]（与 bars 同窗口）
                 raw = self._call_with_retry(lambda: fn(ts_code=code), code=code)
@@ -265,7 +320,7 @@ class TushareSource:
     # normalize
     # ------------------------------------------------------------------ #
     def normalize(self, raw: pd.DataFrame) -> pd.DataFrame:
-        """按 `dataset` 映射到契约；产出通过 `validate_normalized`。"""
+        """按 `dataset` 映射到契约；契约数据集产出通过 `validate_normalized`。"""
         dataset = self.dataset
         if dataset is None:
             raise ContractError(f"{NAME}: normalize() 需先指定 dataset（构造参数）")
@@ -275,9 +330,20 @@ class TushareSource:
             out = self._normalize_bars(raw)
         elif dataset == "corporate_actions":
             out = self._normalize_corporate_actions(raw)
+        elif dataset == "fund_adj":
+            out = self._normalize_fund_adj(raw)
+        elif dataset == "index_symbols":
+            out = self._normalize_index_symbols(raw)
+        elif dataset == "index_daily":
+            out = self._normalize_index_daily(raw)
+        elif dataset == "hk_symbols":
+            out = self._normalize_hk_symbols(raw)
+        elif dataset == "macro_series":
+            out = self._normalize_macro(raw)
         else:
             raise ContractError(f"{NAME}: 未知数据集 {dataset!r}")
-        validate_normalized(out, dataset)
+        if dataset not in _RAW_DATASETS:
+            validate_normalized(out, dataset)
         return out
 
     def _normalize_symbols(self, raw: pd.DataFrame) -> pd.DataFrame:
@@ -347,4 +413,167 @@ class TushareSource:
             "pay_date": _to_date(df["pay_date"]) if "pay_date" in df.columns else None,
             "available_utc": _corporate_available_utc(df),
         })
+        return out
+
+    # ------------------------------------------------------------------ #
+    # 复权因子 / 指数 / 港股（非契约 raw 表）
+    # ------------------------------------------------------------------ #
+    def _normalize_fund_adj(self, raw: pd.DataFrame) -> pd.DataFrame:
+        _util.require_columns(raw, ("ts_code", "trade_date", "adj_factor"), NAME)
+        if len(raw) == 0:
+            return pd.DataFrame(columns=["symbol_id", "ts", "adj_factor"])
+        return pd.DataFrame({
+            "symbol_id": _util.map_symbols(raw["ts_code"], self.symbol_map, NAME),
+            "ts": pd.to_datetime(raw["trade_date"]).dt.date,
+            "adj_factor": pd.to_numeric(raw["adj_factor"]).astype("float64"),
+        })
+
+    def _normalize_index_symbols(self, raw: pd.DataFrame) -> pd.DataFrame:
+        _util.require_columns(raw, ("ts_code", "name", "market", "publisher",
+                                    "category", "base_date", "base_point", "list_date"), NAME)
+        if len(raw) == 0:
+            return pd.DataFrame(columns=[
+                "ts_code", "name", "market", "publisher", "category",
+                "base_date", "base_point", "list_date"])
+        return pd.DataFrame({
+            "ts_code": raw["ts_code"].astype(str),
+            "name": raw["name"].astype(str),
+            "market": raw["market"].astype(str),
+            "publisher": raw["publisher"].astype(str),
+            "category": raw["category"].astype(str),
+            "base_date": _to_date(raw["base_date"]),
+            "base_point": pd.to_numeric(raw["base_point"]).astype("float64"),
+            "list_date": _to_date(raw["list_date"]),
+        })
+
+    def _normalize_index_daily(self, raw: pd.DataFrame) -> pd.DataFrame:
+        _util.require_columns(raw, ("ts_code", "trade_date", "open", "high", "low",
+                                    "close", "pre_close", "vol", "amount"), NAME)
+        if len(raw) == 0:
+            return pd.DataFrame(columns=[
+                "ts_code", "ts", "open", "high", "low", "close", "pre_close",
+                "change", "pct_chg", "volume", "amount"])
+        return pd.DataFrame({
+            "ts_code": raw["ts_code"].astype(str),
+            "ts": pd.to_datetime(raw["trade_date"]).dt.date,
+            "open": pd.to_numeric(raw["open"]).astype("float64"),
+            "high": pd.to_numeric(raw["high"]).astype("float64"),
+            "low": pd.to_numeric(raw["low"]).astype("float64"),
+            "close": pd.to_numeric(raw["close"]).astype("float64"),
+            "pre_close": pd.to_numeric(raw["pre_close"]).astype("float64"),
+            "change": pd.to_numeric(raw["change"]).astype("float64"),
+            "pct_chg": pd.to_numeric(raw["pct_chg"]).astype("float64"),
+            "volume": pd.to_numeric(raw["vol"]).astype("float64"),     # 手（未换算）
+            "amount": pd.to_numeric(raw["amount"]).astype("float64"),  # 千元（未换算）
+        })
+
+    def _normalize_hk_symbols(self, raw: pd.DataFrame) -> pd.DataFrame:
+        _util.require_columns(raw, ("ts_code", "name", "market", "list_status",
+                                    "list_date", "trade_unit", "isin", "curr_type"), NAME)
+        if len(raw) == 0:
+            return pd.DataFrame(columns=[
+                "ts_code", "name", "market", "list_status", "list_date",
+                "delist_date", "trade_unit", "isin", "curr_type"])
+        return pd.DataFrame({
+            "ts_code": raw["ts_code"].astype(str),
+            "name": raw["name"].astype(str),
+            "market": raw["market"].astype(str),
+            "list_status": raw["list_status"].astype(str),
+            "list_date": _to_date(raw["list_date"]),
+            "delist_date": _to_date(raw["delist_date"]) if "delist_date" in raw.columns else None,
+            "trade_unit": pd.to_numeric(raw["trade_unit"], errors="coerce").astype("float64"),
+            "isin": raw["isin"].astype(str),
+            "curr_type": raw["curr_type"].astype(str),
+        })
+
+    # ------------------------------------------------------------------ #
+    # 宏观（契约 macro_series）
+    # ------------------------------------------------------------------ #
+    def _fetch_macro(self, pro, spec: FetchSpec) -> pd.DataFrame:
+        """按 `_MACRO_SERIES` 逐接口拉取，规整为 (series_id, ts, value, unit)。
+
+        cn_cpi/cn_ppi/cn_gdp 单次返回全量历史（行数少），裁剪到 [start, end]；
+        shibor 日频受 2000 行上限约束，需向前翻页补齐。
+        """
+        start, end = spec.start, spec.end
+        rows: list[dict] = []
+        for series_id, unit, api, value_col, ts_col, ts_kind, _lag in _MACRO_SERIES:
+            fn = getattr(pro, api)
+            if api == "shibor":
+                raw = self._fetch_shibor_paged(fn, start, end)
+            else:
+                raw = self._call_with_retry(lambda: fn(), code=series_id)
+                self._throttle()
+            if raw is None or len(raw) == 0:
+                continue
+            for _, r in raw.iterrows():
+                ts = self._macro_ts(r[ts_col], ts_kind)
+                if ts is None or ts < start or ts > end:
+                    continue
+                v = r[value_col]
+                if v is None or pd.isna(v):
+                    continue
+                rows.append({"series_id": series_id, "ts": ts,
+                             "value": float(v), "unit": unit})
+        if not rows:
+            raise ContractError(f"{NAME}: 宏观接口全部返回空（窗口 {start}..{end}）")
+        return pd.DataFrame(rows)
+
+    def _fetch_shibor_paged(self, fn, start: date, end: date) -> pd.DataFrame:
+        """shibor 单次 2000 行上限（日频 ~8 年）；研究窗口 10 年需向前翻页补齐。"""
+        parts: list[pd.DataFrame] = []
+        earliest = start.strftime("%Y%m%d")
+        cur_end = end.strftime("%Y%m%d")
+        while True:
+            raw = self._call_with_retry(
+                lambda: fn(start_date=earliest, end_date=cur_end), code="shibor")
+            self._throttle()
+            if raw is None or len(raw) == 0:
+                break
+            parts.append(raw)
+            mn = str(raw["date"].min())
+            if mn <= earliest:
+                break
+            # 继续向前翻页：把「已取到的最早日」的前一天作为新的上界
+            cur_end = (pd.to_datetime(mn) - pd.Timedelta(days=1)).strftime("%Y%m%d")
+        if not parts:
+            return pd.DataFrame()
+        out = pd.concat(parts, ignore_index=True).drop_duplicates(subset=["date"])
+        return out.sort_values("date").reset_index(drop=True)
+
+    @staticmethod
+    def _macro_ts(raw, kind: str) -> date | None:
+        """把宏观的时间列转成观测日（月频→月末，季频→季末，日频→当日）。"""
+        s = str(raw).strip()
+        if not s or s.lower() in ("nan", "none", "nat"):
+            return None
+        if kind == "month":
+            d = pd.to_datetime(s, format="%Y%m")
+            return (d + pd.offsets.MonthEnd(1)).date()
+        if kind == "quarter":
+            y, q = s.split("Q")
+            month = int(q) * 3
+            d = pd.Timestamp(year=int(y), month=month, day=1)
+            return (d + pd.offsets.MonthEnd(1)).date()
+        if kind == "day":
+            return pd.to_datetime(s).date()
+        raise ContractError(f"{NAME}: 未知宏观时间格式 {kind!r}")
+
+    def _normalize_macro(self, raw: pd.DataFrame) -> pd.DataFrame:
+        cols = list(CONTRACT["macro_series"])
+        if raw is None or len(raw) == 0:
+            return pd.DataFrame(columns=cols)
+        _util.require_columns(raw, ("series_id", "ts", "value", "unit"), NAME)
+        lag = {s[0]: s[6] for s in _MACRO_SERIES}
+        out = pd.DataFrame({
+            "series_id": raw["series_id"].astype(str),
+            "ts": pd.to_datetime(raw["ts"]).dt.date,
+            "value": pd.to_numeric(raw["value"]).astype("float64"),
+            "unit": raw["unit"].astype(str),
+        })
+        out["available_utc"] = [
+            datetime.combine(d + timedelta(days=lag.get(sid, AVAILABILITY_LAG_DAYS)),
+                             datetime.min.time())
+            for sid, d in zip(out["series_id"], out["ts"])
+        ]
         return out

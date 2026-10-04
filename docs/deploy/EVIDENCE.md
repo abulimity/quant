@@ -1943,3 +1943,69 @@ git worktree 是独立物理检出，`parents[3]` 即 worktree 根 → 从 workt
 **最终状态**：tushare 数据唯一落点 = `D:\project\quant\data\bronze\tushare\`（两快照，~49MB）；主仓库台账已登记。worktree 仅余 `data/bronze/synthetic/`（与主项目同 `snapshot_id` 的确定性重复，可删可留）。
 
 ---
+
+## 剩余 tushare 数据集回填（fund_adj / index / hk / macro）（2026-10-04）
+
+**目标**：把境内 ETF 之外的全部剩余 tushare 数据补齐——复权因子 `fund_adj`、基准指数
+`index_basic`+`index_daily`、港股名单 `hk_basic`、宏观最小集（cn_cpi/cn_ppi/cn_gdp/shibor）。
+
+### 1. 代码改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `ingest/adapters/tushare.py` | `DATASETS` 扩至 8 个；`fetch()/normalize()` 新增 `fund_adj`/`index_symbols`/`index_daily`/`hk_symbols`/`macro_series` 分支；`_MACRO_SERIES`（4 系列：CN_CPI_YOY/CN_PPI_YOY/CN_GDP_YOY/CN_SHIBOR_3M，各带单位/接口/值列/时间列/时间粒度/发布滞后天数）；`_fetch_shibor_paged`（shibor 2000 行上限向前翻页）；`_macro_ts`（月→月末/季→季末/日→当日） |
+| `fixtures/synth.py` | `CONTENT_KEYS` +4（`fund_adj`/`index_symbols`/`index_daily`/`hk_symbols`），供 `content_hashes`/`write_snapshot` 兼容 |
+| `ingest/realdata.py` | `_PREID_KEYS` +5；`_assemble_bundle`（通用收尾：派生 snapshot_id + 按 tag_spec 回填审计列）；`build_tushare_index_bundle`/`build_tushare_hk_bundle`/`build_tushare_macro_bundle`；`fund_adj` 并入 `build_tushare_bundle`（同标的池、同快照）；`check_real_invariants` 重写为**按表存在性**守卫 + 新增 fund_adj/index_daily/macro/index_symbols/hk_symbols 检查 |
+| `ingest/orchestrator.py` | `ingest()` 分派 `tushare`/`tushare_index`/`tushare_hk`/`tushare_macro` 四个源（均落 `data/bronze/tushare/`，`check_real_invariants`）；`_mark_ok` 的 `note` 由写死 "synthetic fixture" 改为 `{source} snapshot` |
+| `cli.py` | `--source` help 列出四个 tushare 源 |
+| `scripts/backfill_tushare.py`（新增） | 回填驱动：`winreg` 读 `HKCU\Environment\TUSHARE_TOKEN` → 进程内注入 `os.environ` → 调 `ingest()`；落点固定 `D:\project\quant\data`（与 worktree 数据目录解耦）；**token 不打印不落盘** |
+| `tests/test_tushare_remaining.py`（新增） | 20 用例：`_macro_ts`、5 个新 normalize、`check_real_invariants` 对新表的无 KeyError/结构红旗、`_derive_snapshot_id`/`content_hashes` 对新表无 KeyError |
+| `tests/test_tushare.py` | `test_unknown_dataset_raises` 的「未知数据集」样例由 `fund_adj`（现已合法）改为 `not_a_real_dataset` |
+
+### 2. 小样本 smoke（真实接口，不落主项目）
+
+```text
+index_symbols rows: 8000 | missing benchmarks: []      # 10 个 curated 基准全在名单内
+index_daily 000300.SH 2024-01 rows: 22                 # 列：ts_code/ts/open/high/low/close/pre_close/change/pct_chg/volume/amount
+fund_adj 510300.SH 2024-01 rows: 22
+hk_symbols rows: 2792
+macro_series rows (2024): 279                          # available_utc = ts + 15d（CPI/PPI）
+```
+
+### 3. trade_cal 交叉核对（仅核对，不落库）
+
+```text
+SSE vs XSHG: tushare_open=2431 xcal_sessions=2431 only_tushare=0 only_xcal=0
+```
+
+`tushare trade_cal(exchange=SSE, is_open=1)` 与 core 已在用的 `exchange_calendars.XSHG`
+在 2015–2024 窗口**完全一致**（2431=2431，0 差异）→ 沿用 exchange-calendars 无需改口径。
+
+### 4. 全量回填（落主项目 `D:\project\quant\data`）
+
+| 源 | snapshot_id | row_counts |
+| --- | --- | --- |
+| `tushare_index` | `tushare_index-ffa42af4c69a78bd` | `{index_symbols: 8000, index_daily: 23092}` |
+| `tushare_hk` | `tushare_hk-f47ed6896ac27499` | `{hk_symbols: 2792}` |
+| `tushare_macro` | `tushare_macro-5263a25dcde59090` | `{macro_series: 2755}` |
+| `tushare`（fund_adj 并入，含 bars/分红重取） | `tushare-18a84ba609fece5d` | `{symbols: 2861, bars_daily: 1993234, corporate_actions: 1448, fund_adj: 2156140}` |
+
+> 注：`fund_adj` 并入 `source=tushare`（同一标的池、同一快照，保证复权因子与 bars 同源一致），
+> 故该源需重取 2861 只 ETF 的 bars/分红/复权因子，产出**新快照**（内容哈希含 fund_adj → 新 snapshot_id）。
+> 新快照 `tushare-18a84ba609fece5d` 取代旧 `tushare-704bee7c042ed05c`（旧快照保留、被更正结果取代）；
+> bars 较上轮 +348（1992886→1993234，复权因子回填时 tushare 侧数据微调，结构红旗仍全清）。
+
+### 5. 回归
+
+```text
+python -m unittest tests.test_tushare tests.test_tushare_remaining tests.test_realdata
+Ran 53 tests in 3.657s
+OK
+
+python -m unittest discover -t . -s tests
+Ran 388 tests in 162.148s
+OK
+```
+（全量 388 用例：此前仅 1 处失败 = `test_unknown_dataset_raises` 用了现已合法的 `fund_adj`，已修并重跑确认全绿。）
+
+---

@@ -34,7 +34,13 @@ from quantlab.fixtures.synth import (
     snapshot_dir,
     write_snapshot,
 )
-from quantlab.ingest.realdata import build_tushare_bundle, check_real_invariants
+from quantlab.ingest.realdata import (
+    build_tushare_bundle,
+    build_tushare_hk_bundle,
+    build_tushare_index_bundle,
+    build_tushare_macro_bundle,
+    check_real_invariants,
+)
 from quantlab.fixtures.spec import STUDY_START, STUDY_END
 from quantlab.store.db import connect, warehouse_path
 from quantlab.store.migrate import apply_migrations
@@ -112,7 +118,7 @@ def _registration(con, bundle: FixtureBundle, source: str):
         raise
 
 
-def _mark_ok(con, bundle: FixtureBundle) -> None:
+def _mark_ok(con, bundle: FixtureBundle, source: str) -> None:
     """写入成功后：逐数据集登记 ok、行数、watermark 与内容哈希。"""
     hashes = bundle.content_hashes()
     watermark = _watermark(bundle)
@@ -124,7 +130,7 @@ def _mark_ok(con, bundle: FixtureBundle) -> None:
             "WHERE snapshot_id = ? AND dataset = ?",
             [
                 finished, int(len(frame)), watermark, hashes[dataset],
-                json.dumps({"note": "synthetic fixture"}, ensure_ascii=False),
+                json.dumps({"note": f"{source} snapshot"}, ensure_ascii=False),
                 bundle.snapshot_id, dataset,
             ],
         )
@@ -195,7 +201,7 @@ def ingest_bundle(
     with _write_target(warehouse, con) as writable:
         with _registration(writable, bundle, source):
             write_snapshot(bundle, root)     # 原子：失败则不留下半份快照
-        _mark_ok(writable, bundle)
+        _mark_ok(writable, bundle, source)
     return IngestResult(bundle.snapshot_id, "ok", target, rows, content_hash, False)
 
 
@@ -208,7 +214,7 @@ def _ensure_registered(bundle: FixtureBundle, warehouse, source: str, con=None) 
         if existing == 0:
             with _registration(writable, bundle, source):
                 pass
-            _mark_ok(writable, bundle)
+            _mark_ok(writable, bundle, source)
 
 
 def ingest(
@@ -228,13 +234,20 @@ def ingest(
             raise IngestError(f"未知 universe={universe!r}；当前仅支持 'fixture'。")
         return ingest_bundle(generate(), root, warehouse=warehouse, source=source, con=con)
 
-    if source == "tushare":
-        bundle = build_tushare_bundle(
-            start=start or STUDY_START,
-            end=end or STUDY_END,
-            symbols=symbols,
-        )
+    if source in ("tushare", "tushare_index", "tushare_hk", "tushare_macro"):
         tushare_root = Path(root) if root is not None else TUSHARE_ROOT
+        start_d = start or STUDY_START
+        end_d = end or STUDY_END
+        if source == "tushare":
+            bundle = build_tushare_bundle(
+                start=start_d, end=end_d, symbols=symbols,
+            )
+        elif source == "tushare_index":
+            bundle = build_tushare_index_bundle(start=start_d, end=end_d)
+        elif source == "tushare_hk":
+            bundle = build_tushare_hk_bundle()
+        else:  # tushare_macro
+            bundle = build_tushare_macro_bundle(start=start_d, end=end_d)
         return ingest_bundle(
             bundle, tushare_root, warehouse=warehouse, source=source, con=con,
             check=check_real_invariants,
@@ -242,6 +255,8 @@ def ingest(
 
     raise IngestError(
         f"数据源 {source!r} 尚未接入（VENDOR-TBD）。\n"
-        f"当前可用：source='synthetic'（合成夹具）、source='tushare'（境内 ETF）。\n"
+        f"当前可用：source='synthetic'（合成夹具）、source='tushare'（境内 ETF）、"
+        f"source='tushare_index'（基准指数）、source='tushare_hk'（港股名单）、"
+        f"source='tushare_macro'（宏观最小集）。\n"
         f"接入其它供应商见 LOCAL_DEPLOYMENT_PLAN.md 附录 A。"
     )

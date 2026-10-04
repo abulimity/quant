@@ -9,8 +9,8 @@
 ## 1. 一句话状态
 
 **P5 进行中：P5.1–P5.5 已完成且验证；P5.6 已用真实研报跑通「Parse→Extract→agent 生成代码→校验」，但产出代码有实质语义偏差，且口径决策仍悬。**
-**数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2024，199.3 万根 bar）并完成对账修复；数据已并入主项目 `D:\project\quant\data`。**
-（更新时间：2026-10-04；P5 全过程见 §7.7，tushare 回填见 §7.8）
+**数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2024，199.3 万根 bar）并完成对账修复；剩余数据集（复权因子 `fund_adj`、基准指数 `index`、港股名单 `hk_basic`、宏观最小集）已接入并全部回填，`fund_adj` 并入 tushare 快照（`tushare-18a84ba609fece5d`）；数据并入主项目 `D:\project\quant\data`。**
+（更新时间：2026-10-04；P5 全过程见 §7.7，tushare 回填见 §7.8，剩余数据集见 §7.9）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
 
 > ✅ **已解除**：`bt` 多标的换仓的 **3.6% 偏差** = **停牌顺延缺口**（bt 无「交易日掩码」，
@@ -384,8 +384,9 @@
 
 ### 待续（数据层）
 
-- 复权因子 `fund_adj` 未进契约快照（F.6 总收益待补）。
-- 宏观 / index 基准 / hk_basic / US / FX 仍走 futu/yfinance/宏观接口，属后续回填范围。
+- ~~复权因子 `fund_adj` 未进契约快照（F.6 总收益待补）。~~ → ✅ 已并入 tushare 快照（§7.9）。
+- ~~宏观 / index 基准 / hk_basic。~~ → ✅ 已回填（§7.9）。
+- US / FX 仍走 yfinance / futu，属后续回填范围。
 
 ### 数据位置迁移（2026-10-04）
 
@@ -394,6 +395,32 @@ tushare 数据原先落在 worktree 的 `data/`（根因：数据根按 `__file_
 - Parquet 真相：`D:\project\quant\data\bronze\tushare\{tushare-02d1572bb0f220c7, tushare-704bee7c042ed05c}`（10 文件，sha256 校验 0 失配）。
 - 台账：6 行 tushare `ingest_runs` 已并入 `D:\project\quant\data\warehouse.duckdb`（共 13 行），`v_bars_latest` → `tushare-704bee7c042ed05c`。
 - worktree 侧 `data/bronze/tushare/` 与 `data/warehouse.duckdb` 已删。
+
+---
+
+## 7.9 本会话：剩余 tushare 数据集回填（2026-10-04）
+
+**目标**：补齐境内 ETF 之外的剩余 tushare 数据——复权因子 `fund_adj`、基准指数 `index`、
+港股名单 `hk_basic`、宏观最小集（cn_cpi/cn_ppi/cn_gdp/shibor）。
+
+### 结果
+
+| 源 | snapshot_id | row_counts |
+| --- | --- | --- |
+| `tushare_index` | `tushare_index-ffa42af4c69a78bd` | index_symbols 8000 + index_daily 23092（10 基准 × 2015–2024） |
+| `tushare_hk` | `tushare_hk-f47ed6896ac27499` | hk_symbols 2792 |
+| `tushare_macro` | `tushare_macro-5263a25dcde59090` | macro_series 2755（CPI/PPI/GDP/shibor × 2015–2024） |
+| `tushare`（fund_adj 并入） | `tushare-18a84ba609fece5d` | `{symbols: 2861, bars_daily: 1993234, corporate_actions: 1448, fund_adj: 2156140}` |
+
+### 关键结论
+
+1. **`fund_adj` 并入 `source=tushare`**（同标的池、同快照），保证复权因子与 bars 同源一致；
+   因内容哈希含 fund_adj，产出**新 snapshot_id**（旧快照保留、被新结果取代）。
+2. **`trade_cal` 交叉核对**：tushare SSE 与 exchange-calendars XSHG 2015–2024 **完全一致**
+   （2431=2431）→ 沿用 core 现有日历。
+3. **宏观口径**：`available_utc = 观测期末 + 发布滞后`（CPI/PPI 15d、GDP 30d、shibor 1d）。
+4. **回填驱动** `scripts/backfill_tushare.py`：winreg 读 token（Bash 子进程看不到 setx 的
+   user env），进程内注入，落点固定主项目 `D:\project\quant\data`。
 
 ---
 
