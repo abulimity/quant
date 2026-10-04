@@ -1,10 +1,11 @@
 """请求 futu OpenD 的日线历史 K 线（**不复权**）与**复权因子**，落成 bronze 不可变快照。
 
 用法（在仓库根目录执行）：
-    uv run --project envs/futu python envs/futu/fetch_history_kline.py [--limit N] [--delay 0.3] [--start 2024-10-04] [--end 2026-10-04]
+    uv run --project envs/futu python envs/futu/fetch_history_kline.py [--limit N] [--delay 1.2] [--resume 上次manifest.json] [--start 2024-10-04] [--end 2026-10-04]
 
-标的清单来源（三选一，优先级从高到低）：
+标的清单来源（四选一，优先级从高到低）：
     --codes HK.00700,HK.00005         显式代码列表
+    --resume 上一份 manifest.json      续跑：只抓上一批「失败/未尝试」的 code（正股额度 7 天分批用）
     --plate-snapshot PATH             从已有 plate_stock.parquet 读 `code` 列
     缺省                               内部调 get_plate_stock("HK.Fund")（默认全量）
 
@@ -86,33 +87,70 @@ def write_snapshot(frames: dict[str, pd.DataFrame], snapshot_dir: Path, manifest
         raise
 
 
-def _resolve_codes(args, quote_ctx) -> tuple[list[str], str]:
-    """确定本次要抓取的代码列表（已排序），并返回来源标签。"""
+def _load_manifest(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _is_empty_terminal(errs: list[str]) -> bool:
+    """空表 = 该窗口内确实无数据（终态，不再重试）；其余（限流/额度/未知）一律重试。"""
+    return bool(errs) and all("空表" in e for e in errs)
+
+
+def _resolve_codes(args, quote_ctx) -> tuple[list[str], str, str | None, list[str]]:
+    """确定本次要抓取的**全量 universe**（未按 --limit 截断）。
+
+    返回 (universe, 来源标签, resume_from, empty_codes)。`empty_codes` 是上一批「空表终态」的
+    code（不再重试）；`universe` 交由 main 按 --limit 截断为本次实际尝试的 `codes`。
+    """
     if args.codes:
         codes = sorted({c.strip() for c in args.codes.split(",") if c.strip()})
-        return codes[: args.limit] if args.limit else codes, "cli"
+        return codes, "cli", None, []
+
+    if args.resume:
+        p = Path(args.resume)
+        if p.is_dir():
+            p = p / "manifest.json"
+        if not p.exists():
+            print(f"resume manifest 不存在：{p}", file=sys.stderr)
+            return [], "resume", None, []
+        try:
+            manifest = _load_manifest(p)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"resume manifest 读取/解析失败：{p}（{exc}）", file=sys.stderr)
+            return [], "resume", None, []
+        errors = manifest.get("errors", {})
+        prev_full = [str(c) for c in manifest.get("universe", manifest.get("codes", []))]
+        prev_attempted = [str(c) for c in manifest.get("codes", [])]
+        attempted_set = set(prev_attempted)
+        unattempted = sorted(c for c in prev_full if c not in attempted_set)
+        transient_failed = sorted(
+            c for c in prev_attempted if c in errors and not _is_empty_terminal(errors[c])
+        )
+        empty = sorted(c for c in prev_attempted if c in errors and _is_empty_terminal(errors[c]))
+        pending = unattempted + transient_failed
+        return pending, f"resume:{p.parent.name}", p.parent.name, empty
 
     if args.plate_snapshot:
         path = Path(args.plate_snapshot)
         if not path.exists():
             print(f"plate_snapshot 不存在：{path}", file=sys.stderr)
-            return [], "plate_snapshot"
+            return [], "plate_snapshot", None, []
         df = pd.read_parquet(path)
         if "code" not in df.columns:
             print(f"plate_snapshot 缺少 `code` 列：实际列 {list(df.columns)}", file=sys.stderr)
-            return [], "plate_snapshot"
+            return [], "plate_snapshot", None, []
         codes = sorted(df["code"].astype(str).tolist())
-        return codes[: args.limit] if args.limit else codes, "plate_snapshot"
+        return codes, "plate_snapshot", None, []
 
     ret, df = quote_ctx.get_plate_stock(args.plate_code, sort_field=SortField.CODE, ascend=True)
     if ret != RET_OK:
         print(f"get_plate_stock 失败：ret={ret}，error={df}", file=sys.stderr)
-        return [], "plate_api"
+        return [], "plate_api", None, []
     if df is None or len(df) == 0:
         print(f"get_plate_stock 返回空表（plate_code={args.plate_code}），拒绝继续。", file=sys.stderr)
-        return [], "plate_api"
+        return [], "plate_api", None, []
     codes = sorted(df["code"].astype(str).tolist())
-    return codes[: args.limit] if args.limit else codes, "plate_api"
+    return codes, "plate_api", None, []
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -120,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--codes", help="显式代码列表，逗号分隔（优先级最高）")
     parser.add_argument("--plate-snapshot", help="从已有 plate_stock.parquet 读 code 列")
     parser.add_argument("--plate-code", default="HK.Fund")
+    parser.add_argument("--resume", help="从上一份 history_kline 的 manifest.json（或其快照目录）续跑：只重试上一批失败/未尝试的 code")
     parser.add_argument("--limit", type=int, default=None, help="只抓排序后前 N 只（默认全部）")
     parser.add_argument("--delay", type=float, default=1.2, help="每只代码之间的限频间隔秒数（默认 1.2，对应 futu「每30秒最多60次」；0 关闭）")
     parser.add_argument("--start", help="开始日期 YYYY-MM-DD（默认 end 往前 730 天）")
@@ -133,13 +172,18 @@ def main(argv: list[str] | None = None) -> int:
 
     quote_ctx = OpenQuoteContext(host=args.host, port=args.port)
     try:
-        codes, code_source = _resolve_codes(args, quote_ctx)
+        universe, code_source, resume_from, empty_codes = _resolve_codes(args, quote_ctx)
     finally:
         pass  # 上下文保持打开，后面还要用；close 在抓取完成后统一处理
 
-    if not codes:
+    if not universe:
         quote_ctx.close()
+        if code_source.startswith("resume"):
+            print(f"无可重试 code：上一批已全部完成（空表终态 {len(empty_codes)} 只已排除）。", file=sys.stderr)
+            return 0
         return 1
+
+    codes = universe[: args.limit] if args.limit else universe
 
     kline_frames: list[pd.DataFrame] = []
     rehab_frames: list[pd.DataFrame] = []
@@ -203,6 +247,9 @@ def main(argv: list[str] | None = None) -> int:
         "start": start,
         "end": args.end,
         "codes": codes,
+        "universe": universe,
+        "resume_from": resume_from,
+        "empty_codes": empty_codes,
         "code_source": code_source,
         "plate_code": args.plate_code if code_source == "plate_api" else None,
         "host": args.host,
@@ -228,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
         "kline_rows": manifest["kline_rows"],
         "rehab_rows": manifest["rehab_rows"],
         "total_codes": len(codes),
+        "universe_codes": len(universe),
         "ok_codes": ok_count,
         "failed_codes": len(errors),
         "errors": errors,

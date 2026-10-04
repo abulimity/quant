@@ -1858,3 +1858,24 @@ PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history
 - 复权口径同试点：`autype=NONE` 原始价 + `rehab.parquet` 因子分存，`return_kind=price_return`（F.6）。
 
 ---
+
+### futu OpenD · 续抓机制 `--resume`（2026-10-04）
+
+**目的**：落实「分 5 批、每 7 天一批」拉全方案——给脚本加 `--resume`，每批只抓上一批「失败/未尝试」的 code，不重复消耗正股额度。
+
+**实现**：
+- `--resume <manifest.json | 快照目录>`：读上一份 manifest 的 `universe`（全量目标）/`codes`（本批尝试）/`errors`，待重试集合 = 未尝试 ∪ 瞬时失败（限流/额度）；「空表」终态 code 永久排除，不再重试。
+- manifest 新增 `universe`（全量目标，供下批算「未尝试」）与 `resume_from`、`empty_codes`（溯源）。
+- `--limit` 仍在 main 里对 `universe` 截断为本批 `codes`，故每批可 `--limit 100` 卡额度。
+
+**验证（离线，不连 OpenD）**：
+- [x] `_is_empty_terminal` 分类正确（空表=终态；限流/额度/部分失败=重试）
+- [x] 对已有快照 `20261004_115547_925918` 跑 resume 分支：`pending=374`（472−96−2）、`empty=["HK.02849","HK.03051"]`、`source="resume:20261004_115547_925918"`
+
+**用法（每 7 天额度释放后跑一批）**：
+
+```powershell
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history_kline.py --resume <上一批manifest.json> --limit 100
+```
+
+---
