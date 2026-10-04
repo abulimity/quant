@@ -1075,6 +1075,35 @@ sources:
 
 ---
 
+### A.1 futu OpenD · 港股 bronze 拉取 + 定时续抓（进行中）
+
+**现状**：`envs/futu/fetch_history_kline.py`（self-contained）已接 futu OpenD，落 bronze 原始快照
+`data/bronze/futu/history_kline/<snapshot_id>/`（`kline.parquet` 不复权原始价 + `rehab.parquet` 复权因子 + `manifest.json`）。
+**仅 bronze 原始快照，尚未 normalize 到 `bars_daily` 契约**（`symbol_map`/currency 未配，P2.4 适配器与契约测试留作后续）。
+
+**两道 futu 限额（实测撞过）**：
+1. 历史K线 / 复权因子各「每30秒最多60次」（≈2 次/秒）——`--delay` 默认 1.2s 规避。
+2. 正股历史K线额度「每7天100只」——只能分批。
+
+**定时续抓 runbook**（orca 到点发来下面这一行命令）：
+
+```powershell
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history_kline.py --resume latest --limit 100
+```
+
+收到后固定动作：跑命令 → 输出+退出码追加 `docs/deploy/EVIDENCE.md` → 按退出码回报：
+
+| 退出码 | 含义 | 处置 |
+| --- | --- | --- |
+| `0` + summary | 本批全部成功 | 报告 ok/失败数，等下一批 |
+| `0` + `无可重试 code` | 全量完成（472 只覆盖） | 停掉定时任务 |
+| `1` | 部分失败（额度/限流，快照已落盘） | 等下一批 `--resume latest` 续跑 |
+| `2` | 硬故障（一个都没拉到 / 清单解析失败） | PushNotification 告警 + 停等人工 |
+
+首份快照已存在（`20261004_115547_925918`），`--resume latest` 可直接用；全新环境无快照时，首批改用 `--plate-code HK.Fund --limit 100` 起头。
+
+---
+
 ## 附录 B · 验收清单汇总（可勾选）
 
 ```text

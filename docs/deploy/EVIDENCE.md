@@ -2190,3 +2190,118 @@ $env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m quantlab.x2.llm --c
   为**既有**问题（非本次改动引入），不在本步范围。
 
 ---
+
+### futu OpenD · 日线历史 K 线（不复权 + 复权因子）试点（2026-10-04）
+
+**目的**：从 futu OpenD 拉取港股日线历史 K 线，口径按用户拍板——**不复权原始价**（`AuType.NONE`）+ **同时拉取复权因子**（`get_rehab`）分开存，落 bronze 不可变快照（试点 5 只、近 2 年）。
+
+**前置**：FutuOpenD 已启动并登录，`127.0.0.1:11111` 监听（`Test-NetConnection` TcpTestSucceeded=True）。账户订阅额度 100（本次 5 只远低于额度）。
+
+**执行**：
+
+```powershell
+# 1) 建隔离环境（uv.lock 已存在，秒级）
+uv sync --project envs/futu
+# 2) 离线校验（不连 OpenD）：模块可导入 + 纯函数 _default_start/_snapshot_id
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python -c "..."
+# 3) 试点拉取（默认 5 只、近 730 天）
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history_kline.py --limit 5
+```
+
+**产出**：
+- `envs/futu/fetch_history_kline.py`（self-contained 入口脚本，含 `if __name__ == "__main__":` 保护）
+- `data/bronze/futu/history_kline/20261004_094055_308738/kline.parquet`（2162 行 × 13 列）
+- 同目录 `rehab.parquet`（79 行 × 30 列）、`manifest.json`
+
+**验证**：
+- [x] **V1** 脚本退出码 0，`ret == RET_OK`，5 只代码全部成功（`HK.02800/02801/02802/02803/02804`）
+- [x] **V2** kline 可读回：shape `(2162, 13)`，含 `code/time_key/open/high/low/close/volume`；`time_key` 区间 `2024-10-04 ~ 2026-10-02`
+- [x] **V2** rehab 可读回：shape `(79, 30)`，含 `code/ex_div_date/forward_adj_factorA/B/backward_adj_factorA/B`
+- [x] **V2** manifest：`autype=="NONE"`、`return_kind=="price_return"`、`rehab_separate==true`、`code_source=="plate_api"`、`futu_api_version=="10.11.7108"`
+- [x] **V2** 回读断言全过（列齐全、行数、复权披露字段）
+
+**kline 列**：`code / name / time_key / open / close / high / low / pe_ratio / turnover_rate / volume / turnover / change_rate / last_close`
+**rehab 列**（30）：`code` + `ex_div_date / split_base / split_ert / join_base / join_ert / split_ratio / per_cash_div / special_dividend / bonus_base / bonus_ert / per_share_div_ratio / transfer_base / transfer_ert / per_share_trans_ratio / allot_base / allot_ert / allotment_ratio / allotment_price / add_base / add_ert / stk_spo_ratio / stk_spo_price / spin_off_base / spin_off_ert / spin_off_ratio / forward_adj_factorA / forward_adj_factorB / backward_adj_factorA / backward_adj_factorB`
+
+**备注**：
+- **复权口径（F.6）**：`autype=NONE` 原始价不可变；复权因子单独存 `rehab.parquet`，前/后复权可据 `forward_adj_factorA/B`、`backward_adj_factorA/B` 重算。`return_kind=price_return`——不复权原始价**不是**总收益，未冒充 `total_return`。
+- **样本差异**：`HK.02802` 仅 198 行（上市较晚，历史短于其余 4 只的 491 行），非数据缺失；`HK.02804` 无除权记录（rehab 无该 code），合法。
+- **`get_rehab` 返回全历史除权事件**（`ex_div_date` 2002~2026），未按 2 年窗口裁剪——因子按除权日对齐，天然应保留全量。
+- **订阅额度**：账户订阅额度 100。本次 5 只无压力；后续扩展到 472 只需注意额度/分批（历史 K 线请求是否计入订阅额度待实测确认）。
+- **未套 `bars_daily` 契约**：与板块列表一致，本次为原始 bronze 快照。归一化到契约需先配 `symbol_map`/currency（`sources.yaml` 仍空），留作后续。
+
+---
+
+### futu OpenD · 全量拉取（472 只）—— 撞到两道限流，部分成功（2026-10-04）
+
+**目的**：试点 5 只跑绿后，按用户指示「开始获取全量数据」——对 HK.Fund 全部 472 只拉取近 2 年日线（不复权）+ 复权因子。
+
+**执行**：
+
+```powershell
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history_kline.py
+```
+
+**结果**：**部分成功**。`ok_codes=96`、`failed_codes=376`；kline 43015 行 × 13 列、rehab 1379 行 × 30 列，已原子落成快照 `20261004_115547_925918`。脚本按设计「单只失败不中断其余，收集进 manifest.errors 并最终非零退出」，故退出码 1（**非崩溃**）。
+
+**失败原因三类**（详见 manifest.errors，逐 code 可追溯）：
+1. **频率限流**（约占多数）：「获取历史K线/复权因子频率太高，每30秒最多60次」。首版 `--delay 0.3`（≈6.7 次/秒）远超 2 次/秒上限 → **已将默认改为 `--delay 1.2`**（每只代码 2 个请求 ≈1.7 次/秒，留边际）。
+2. **额度用尽**（约占半数）：「历史K线额度不足，已用正股额度 100/100，7天后全部释放」。印证用户提示的「订阅额度 100」——**正股历史K线额度 = 每7天100只**；本轮 + 试点 5 只 + 中间一次崩溃重试已把额度打满。
+3. **空表 2 只**（`HK.02849`、`HK.03051`）：近 2 年窗口内无数据（退市/新上市），合法非错。
+
+**回读校验**：`kline.parquet` shape `(43015, 13)`、`code` 唯一 98；`rehab.parquet` shape `(1379, 30)`、`code` 唯一 125。与 `ok_codes=96` 的差是「部分成功」的必然结果——某只代码可能 kline 成功但 rehab 被限流（或反之），其已成功的部分仍留在快照，失败的子请求记入 errors。
+
+**结论 / 后续**：
+- 限流已修（`--delay 1.2`）；**额度是硬顶**——免费档每7天只能拉约 100 只正股历史K线。拉全 472 只需分 ~5 批（每7天一批）或升级账户；当前额度已满，本周内再跑只会继续报「额度不足」。
+- 本轮已到手 96 只完整（kline+rehab 双清）标的的原始快照，可先推进这些标的的 `bars_daily` 归一化（`symbol_map`/currency 仍未配）。
+- 复权口径同试点：`autype=NONE` 原始价 + `rehab.parquet` 因子分存，`return_kind=price_return`（F.6）。
+
+---
+
+### futu OpenD · 续抓机制 `--resume`（2026-10-04）
+
+**目的**：落实「分 5 批、每 7 天一批」拉全方案——给脚本加 `--resume`，每批只抓上一批「失败/未尝试」的 code，不重复消耗正股额度。
+
+**实现**：
+- `--resume <manifest.json | 快照目录>`：读上一份 manifest 的 `universe`（全量目标）/`codes`（本批尝试）/`errors`，待重试集合 = 未尝试 ∪ 瞬时失败（限流/额度）；「空表」终态 code 永久排除，不再重试。
+- manifest 新增 `universe`（全量目标，供下批算「未尝试」）与 `resume_from`、`empty_codes`（溯源）。
+- `--limit` 仍在 main 里对 `universe` 截断为本批 `codes`，故每批可 `--limit 100` 卡额度。
+
+**验证（离线，不连 OpenD）**：
+- [x] `_is_empty_terminal` 分类正确（空表=终态；限流/额度/部分失败=重试）
+- [x] 对已有快照 `20261004_115547_925918` 跑 resume 分支：`pending=374`（472−96−2）、`empty=["HK.02849","HK.03051"]`、`source="resume:20261004_115547_925918"`
+
+**用法（每 7 天额度释放后跑一批）**：
+
+```powershell
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history_kline.py --resume <上一批manifest.json> --limit 100
+```
+
+---
+
+### futu OpenD · `--resume latest` + 硬故障退出码 2（2026-10-04）
+
+**目的**：让 orca 定时任务用一条固定命令续跑、且只在「真故障」时告警——而非把预期的额度/限流部分失败也当故障。
+
+**实现**（`envs/futu/fetch_history_kline.py`）：
+- `--resume latest`：自动取 `--out` 下按快照目录名（=UTC 时间戳，字典序=时间序）排序的最新一份 `manifest.json`，无需每次手填上一批路径。
+- 退出码语义：`0`=全部成功（或续跑无可重试）；`1`=部分失败（快照已落盘，下批 `--resume` 续跑）；`2`=硬故障（一个都没拉到 / 清单解析失败）。
+- 新增 `resume_error` 来源标签，区分「续跑无可重试（→0）」与「resume manifest 缺失/解析失败 / latest 找不到快照（→2）」。
+- `main` 里「全部代码拉取失败，拒绝落盘」从 `return 1` 改为 `return 2`；`if not universe` 的非 resume 分支（plate_api/plate_snapshot 解析失败）也改为 `return 2`。
+
+**验证（离线，不连 OpenD）**：
+- [x] `_latest_manifest` 取到最新 `20261004_115547_925918/manifest.json`
+- [x] `--resume latest` → `source="resume:20261004_115547_925918"`、`pending=374`、`empty=["HK.02849","HK.03051"]`
+- [x] `--resume latest` 但 `--out` 无快照 → `resume_error`（→退出码 2）
+- [x] `--resume 不存在的manifest.json` → `resume_error`（→退出码 2）
+- [x] 源码静态断言两处 `return 2` 就位
+
+**orca 定时任务可用的一条固定命令**：
+
+```powershell
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history_kline.py --resume latest --limit 100
+```
+
+（退出码 2 才触发告警；额度/限流导致的部分失败退出码 1，静默等下一批。）
+
+---
