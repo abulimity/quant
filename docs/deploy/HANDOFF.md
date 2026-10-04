@@ -8,9 +8,9 @@
 
 ## 1. 一句话状态
 
-**P5 进行中：P5.1–P5.5 已完成且验证；P5.6 已用真实研报跑通「Parse→Extract→agent 生成代码→校验」，但产出代码有实质语义偏差；「规格 vs 代码」口径已由 §7.7 的 H1–H6 证据指向「规格为真相」（待你确认落定，见 §7.6「重估」）。**
+**P5 进行中：P5.1–P5.5 已完成且验证；「规格为真相 A」口径已确认落定，能力域内 E2E 两段均已落地——E2E-A（手写规格契约链，6/6 通过）与 E2E-B（受控 DSL + fail-closed parser，三 V3 全过、真跑权重 exact parity）。剩余：全链路六段（vectorbt→backtrader→bt→报告）与横截面算子族 #14 未做（见 §7.10）。**
 **数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2026-09-30，272.4 万根 bar）并完成对账修复；剩余数据集（复权因子 `fund_adj`、基准指数 `index`、港股名单 `hk_basic`、宏观最小集）已接入并全部回填，时间范围扩展到最新交易日 2026-09-30（最新快照 `tushare-f4f7c81a15b5779c`）；数据并入主项目 `D:\project\quant\data`。**
-（更新时间：2026-10-04；P5 全过程见 §7.7，口径重估见 §7.6，tushare 回填见 §7.8，剩余数据集见 §7.9）
+（更新时间：2026-10-04；P5 全过程见 §7.7，口径重估见 §7.6，tushare 回填见 §7.8，剩余数据集见 §7.9，能力域内 E2E 落地见 §7.10）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
 
 > ✅ **已解除**：`bt` 多标的换仓的 **3.6% 偏差** = **停牌顺延缺口**（bt 无「交易日掩码」，
@@ -324,14 +324,13 @@
 > 回测` 这一整条契约链。重估把卡点从「A or B 二选一」**收敛**为两件具体事：
 > ① 能力域内 E2E（时序样例）；② 横截面算子族 #14（真实研报属此域，另立任务）。
 
-### 下一步（待你确认 A，然后）
+### 下一步（✅ 已确认 A 并执行，见 §7.10）
 
-- **确认 A**（证据已指向，B 无需再议）。
-- **先做能力域内 E2E**：跑 `sample-ma-cross.md`（时序）→ `map_to_contract` → `spec2weights`
-  → backtrader/reference 对拍，证明契约链在**我们可表达的形态**上正确。这是目前唯一的未证环节。
-- **解析层子问题仍待定**（自建指标/伪代码 → `Expr`，还是改 prompt 直出我方 schema）。
-  建议在能力域内 E2E 跑通后再定 —— 时序样例规格简单，先验证契约本身。
-- **真实研报（横截面）**仍归 **#14**，不作为 P5.6 验收对象；§7.7 的 H1–H6 作为
+- **确认 A**：✅ 已确认（证据指向，B 已否决）。
+- **能力域内 E2E**：✅ 已落地（E2E-A 契约链 + E2E-B 受控 DSL/parser，见 §7.10）。
+- **解析层子问题**：✅ 已定——用户拍板「受控 DSL + fail-closed parser」（§P5.6a），
+  不再走 x2strategy 的 `paper2spec` 提取，改为自研 prompt→DSL。
+- **真实研报（横截面）**：仍归 **#14**，不作为 P5.6 验收对象；§7.7 的 H1–H6 作为
   「代码不可当真相」的反面证据留存，不进入主线。
 
 ---
@@ -458,6 +457,53 @@ tushare 数据原先落在 worktree 的 `data/`（根因：数据根按 `__file_
 
 - `symbols` 保持 2861：`fund_basic(market=E)` 是当前全名单（无日期窗口），symbol_id 不因扩展移位。
 - 三个源旧快照原封保留，新快照为独立不可变快照；`check_real_invariants` 通过（进程 exit 0）。
+
+---
+
+## 7.10 本会话：P5.6 能力域内 E2E 落地 —— E2E-A 契约链 + E2E-B 受控 DSL/parser（2026-10-04）
+
+**目标**：把 §7.6 的「下一步」落地——口径 A「规格为真相」确认后，补上唯一未证环节：
+能力域内时序样例 `sample-ma-cross.md` 的契约链。分两段：E2E-A（确定性契约链，手写规格）与
+E2E-B（论文 → spec 的 LLM 提取层，用户拍板「受控 DSL + fail-closed parser」）。
+
+### E2E-A · 确定性契约链（手写规格）
+
+- `tests/test_p5_ma_cross_e2e.py` **6/6 通过**：手写规格过 P3.2 闸门 → `emit_signals` 逐日
+  对拍手算金叉/死叉（`cross_above/below` 事件语义）→ 权重时间线逐格对拍持仓状态 →
+  reference/backtrader 对拍（1e-4）。
+- 关键口径：`momentum_window = lookback = 60`（默认 63 会把 60–62 日的金叉多卡 3 日）；
+  「权重」=「持仓状态 ∧ 可成交 ∧ 动量预热」，交易所休市日（167 天）不表达目标（F.4.5）。
+
+### E2E-B · 受控 DSL + fail-closed parser（§P5.6a，用户拍板）
+
+**设计**：prompt 只负责逼出结构化，parser 只负责吃掉结构化，谁都不猜自然语言。核心交付
+`src/quantlab/x2/dsl.py`（纯函数 parser，白名单与 `emit.evaluate._SUPPORTED_OPS` 严格同步）。
+
+- **三 V3 全过**（`tests/test_p5_dsl.py` 20/20）：
+  - **V3 #1** 合法 DSL → 合规 `StrategySpec`；畸形 DSL（未知算子/缺 op/非对象/窗口非正整数/
+    arity 错/缺 entry…）→ 明确抛 `DslParseError`，无静默兜底。
+  - **V3 #2** `sample-ma-cross.md` 真跑 prompt→DSL→parser→闸门→`spec2weights`，权重与
+    E2E-A 手写规格**逐格一致（exact parity）**。
+  - **V3 #3** 语义偏离可见：`gt`/`lt` 结构合法被收下（parser 不猜语义）但权重最大差 >0.5；
+    `needs_human_review` 标记保留。
+- **真跑**（真实 LLM，`anthropic/deepseek-v4-pro`）：一次即产出语义正确的 DSL（`cross_above`/
+  `cross_below`，未偏离成 `gt`/`lt`）。
+- **配套改动**：`paper2spec.py`（`OP_ALIASES` 补 cross、二元算子 fail-closed 拒绝并引导走 DSL、
+  解析 `exit`、新增 `extract_dsl()`）、`envs/x2/entry.py`（新增 `paper2dsl` 算子，凭据走环境变量
+  不落盘）、`src/quantlab/x2/__init__.py`（导出 5 符号）。回归 `test_p5_paper2spec.py` 17/17 无回归。
+
+### 提交（本会话）
+
+| commit | 内容 |
+| --- | --- |
+| `013f7d8` | `chore(futu)`：`.gitignore` 忽略 `envs/futu/futu_opend/`（250MB OpenD 二进制，不入库） |
+| `481fbed` | `feat(x2)`：P5.6 端到端验收落地（E2E-A + E2E-B，8 文件 +1093/−2） |
+
+### 剩余（未做，非阻塞）
+
+- **全链路六段**（P5.6 的 V2/V4）：论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 →
+  bt 组合 → 报告，全程无人工改文件 —— **尚未串起来**（本次只到 paper→spec→weights 对拍）。
+- **横截面算子族 #14**（`rank`/`cross_sectional_rank`/`condition`）——真实研报属此域，单独立项。
 
 ---
 
