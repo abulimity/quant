@@ -1791,3 +1791,44 @@ uv run --project envs/futu python envs/futu/fetch_plate_stock.py
 - 编码：parquet 内为正确 UTF-8；PowerShell 控制台显示乱码是控制台 GBK 代码页的显示问题，非数据问题（已用 codepoint 断言排除）。
 
 ---
+
+### futu OpenD · 日线历史 K 线（不复权 + 复权因子）试点（2026-10-04）
+
+**目的**：从 futu OpenD 拉取港股日线历史 K 线，口径按用户拍板——**不复权原始价**（`AuType.NONE`）+ **同时拉取复权因子**（`get_rehab`）分开存，落 bronze 不可变快照（试点 5 只、近 2 年）。
+
+**前置**：FutuOpenD 已启动并登录，`127.0.0.1:11111` 监听（`Test-NetConnection` TcpTestSucceeded=True）。账户订阅额度 100（本次 5 只远低于额度）。
+
+**执行**：
+
+```powershell
+# 1) 建隔离环境（uv.lock 已存在，秒级）
+uv sync --project envs/futu
+# 2) 离线校验（不连 OpenD）：模块可导入 + 纯函数 _default_start/_snapshot_id
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python -c "..."
+# 3) 试点拉取（默认 5 只、近 730 天）
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history_kline.py --limit 5
+```
+
+**产出**：
+- `envs/futu/fetch_history_kline.py`（self-contained 入口脚本，含 `if __name__ == "__main__":` 保护）
+- `data/bronze/futu/history_kline/20261004_094055_308738/kline.parquet`（2162 行 × 13 列）
+- 同目录 `rehab.parquet`（79 行 × 30 列）、`manifest.json`
+
+**验证**：
+- [x] **V1** 脚本退出码 0，`ret == RET_OK`，5 只代码全部成功（`HK.02800/02801/02802/02803/02804`）
+- [x] **V2** kline 可读回：shape `(2162, 13)`，含 `code/time_key/open/high/low/close/volume`；`time_key` 区间 `2024-10-04 ~ 2026-10-02`
+- [x] **V2** rehab 可读回：shape `(79, 30)`，含 `code/ex_div_date/forward_adj_factorA/B/backward_adj_factorA/B`
+- [x] **V2** manifest：`autype=="NONE"`、`return_kind=="price_return"`、`rehab_separate==true`、`code_source=="plate_api"`、`futu_api_version=="10.11.7108"`
+- [x] **V2** 回读断言全过（列齐全、行数、复权披露字段）
+
+**kline 列**：`code / name / time_key / open / close / high / low / pe_ratio / turnover_rate / volume / turnover / change_rate / last_close`
+**rehab 列**（30）：`code` + `ex_div_date / split_base / split_ert / join_base / join_ert / split_ratio / per_cash_div / special_dividend / bonus_base / bonus_ert / per_share_div_ratio / transfer_base / transfer_ert / per_share_trans_ratio / allot_base / allot_ert / allotment_ratio / allotment_price / add_base / add_ert / stk_spo_ratio / stk_spo_price / spin_off_base / spin_off_ert / spin_off_ratio / forward_adj_factorA / forward_adj_factorB / backward_adj_factorA / backward_adj_factorB`
+
+**备注**：
+- **复权口径（F.6）**：`autype=NONE` 原始价不可变；复权因子单独存 `rehab.parquet`，前/后复权可据 `forward_adj_factorA/B`、`backward_adj_factorA/B` 重算。`return_kind=price_return`——不复权原始价**不是**总收益，未冒充 `total_return`。
+- **样本差异**：`HK.02802` 仅 198 行（上市较晚，历史短于其余 4 只的 491 行），非数据缺失；`HK.02804` 无除权记录（rehab 无该 code），合法。
+- **`get_rehab` 返回全历史除权事件**（`ex_div_date` 2002~2026），未按 2 年窗口裁剪——因子按除权日对齐，天然应保留全量。
+- **订阅额度**：账户订阅额度 100。本次 5 只无压力；后续扩展到 472 只需注意额度/分批（历史 K 线请求是否计入订阅额度待实测确认）。
+- **未套 `bars_daily` 契约**：与板块列表一致，本次为原始 bronze 快照。归一化到契约需先配 `symbol_map`/currency（`sources.yaml` 仍空），留作后续。
+
+---
