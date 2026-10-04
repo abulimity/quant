@@ -9,7 +9,7 @@
 ## 1. 一句话状态
 
 **P5 进行中：P5.1–P5.5 已完成且验证；P5.6 已用真实研报跑通「Parse→Extract→agent 生成代码→校验」，但产出代码有实质语义偏差，且口径决策仍悬。**
-**数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2024，199.3 万根 bar）并完成对账修复；剩余数据集（复权因子 `fund_adj`、基准指数 `index`、港股名单 `hk_basic`、宏观最小集）已接入并全部回填，`fund_adj` 并入 tushare 快照（`tushare-18a84ba609fece5d`）；数据并入主项目 `D:\project\quant\data`。**
+**数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2026-09-30，272.4 万根 bar）并完成对账修复；剩余数据集（复权因子 `fund_adj`、基准指数 `index`、港股名单 `hk_basic`、宏观最小集）已接入并全部回填，时间范围扩展到最新交易日 2026-09-30（最新快照 `tushare-f4f7c81a15b5779c`）；数据并入主项目 `D:\project\quant\data`。**
 （更新时间：2026-10-04；P5 全过程见 §7.7，tushare 回填见 §7.8，剩余数据集见 §7.9）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
 
@@ -421,6 +421,22 @@ tushare 数据原先落在 worktree 的 `data/`（根因：数据根按 `__file_
 3. **宏观口径**：`available_utc = 观测期末 + 发布滞后`（CPI/PPI 15d、GDP 30d、shibor 1d）。
 4. **回填驱动** `scripts/backfill_tushare.py`：winreg 读 token（Bash 子进程看不到 setx 的
    user env），进程内注入，落点固定主项目 `D:\project\quant\data`。
+
+### 7.9.1 时间范围扩展至最新交易日（2026-09-30）
+
+用户要求把本次数据时间范围扩展到最新交易日。`exchange_calendars.XSHG` 给出 2026-10-04
+之前最近一个交易日 = **2026-09-30**（国庆休市前）。`scripts/backfill_tushare.py` 的 `END`
+改为动态求「今天（含）前最后一个交易日」，`START` 仍 2015-01-01；重跑三个带日期的源。
+
+| 源 | 新 snapshot_id | row_counts（旧 → 新） |
+| --- | --- | --- |
+| `tushare` | `tushare-f4f7c81a15b5779c` | `{symbols: 2861, bars_daily: 1993234 → 2724037, corporate_actions: 1448 → 2174, fund_adj: 2156140 → 2845102}` |
+| `tushare_index` | `tushare_index-86318b52ea0fbe04` | index_symbols 8000 + index_daily 23092 → 27332 |
+| `tushare_macro` | `tushare_macro-a424ac296fabfad8` | macro_series 2755 → 3235 |
+| `tushare_hk` | （不变，跳过） | hk_symbols 2792 |
+
+- `symbols` 保持 2861：`fund_basic(market=E)` 是当前全名单（无日期窗口），symbol_id 不因扩展移位。
+- 三个源旧快照原封保留，新快照为独立不可变快照；`check_real_invariants` 通过（进程 exit 0）。
 
 ---
 

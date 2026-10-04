@@ -20,13 +20,17 @@ import sys
 import winreg
 from datetime import date
 
+import exchange_calendars as ec
+
 from quantlab.ingest.orchestrator import ingest
 
 MAIN_DATA = r"D:\project\quant\data"
 ROOT = MAIN_DATA + r"\bronze\tushare"
 WAREHOUSE = MAIN_DATA + r"\warehouse.duckdb"
 START = date(2015, 1, 1)
-END = date(2024, 12, 31)
+# 最新交易日：XSHG 日历上「今天（含）」前的最后一个交易日（周末/节假日自动排除）。
+# 2026-10-04 当天 = 2026-09-30（国庆休市前最后一个交易日）。
+END = ec.get_calendar("XSHG").sessions_in_range("2026-01-01", date.today())[-1].date()
 
 SOURCES = ("tushare", "tushare_index", "tushare_hk", "tushare_macro")
 

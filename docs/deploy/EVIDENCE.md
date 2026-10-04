@@ -2009,3 +2009,30 @@ OK
 （全量 388 用例：此前仅 1 处失败 = `test_unknown_dataset_raises` 用了现已合法的 `fund_adj`，已修并重跑确认全绿。）
 
 ---
+
+## 时间范围扩展至最新交易日（2026-09-30）（2026-10-04）
+
+**动机**：上一节四个源的研究窗口止于 `2024-12-31`（`STUDY_END`）。用户要求把本次获取的
+数据时间范围扩展到**最新交易日**。`exchange_calendars.XSHG` 给出 2026-10-04 当天之前
+最近一个交易日 = **2026-09-30**（国庆休市前最后一个交易日）。
+
+**改动**：`scripts/backfill_tushare.py` 的 `END` 由写死 `2024-12-31` 改为
+`exchange_calendars.XSHG` 动态求「今天（含）前最后一个交易日」；`START` 保持 2015-01-01。
+
+### 结果（落主项目 `D:\project\quant\data`）
+
+| 源 | 新 snapshot_id | row_counts（旧 → 新） |
+| --- | --- | --- |
+| `tushare` | `tushare-f4f7c81a15b5779c` | `{symbols: 2861, bars_daily: 1993234 → 2724037, corporate_actions: 1448 → 2174, fund_adj: 2156140 → 2845102}` |
+| `tushare_index` | `tushare_index-86318b52ea0fbe04` | `{index_symbols: 8000, index_daily: 23092 → 27332}` |
+| `tushare_macro` | `tushare_macro-a424ac296fabfad8` | `{macro_series: 2755 → 3235}` |
+| `tushare_hk` | `tushare_hk-f47ed6896ac27499`（不变，跳过） | `{hk_symbols: 2792}` |
+
+**说明**：
+- `symbols` 保持 2861：`fund_basic(market=E)` 是**当前全名单**（无日期窗口），不受 `END`
+  影响 → symbol_id 不因扩展而移位（永久 ID 稳定）。
+- `tushare_hk` 是 `hk_basic` 静态名单、无时间序列，本轮不重取（快照不变）。
+- 三个源旧快照原封保留；新快照为独立不可变快照，`ingest_runs` 三态 `ok`。
+- `check_real_invariants` 在 ingest 内已通过（进程 exit 0，无结构红旗）。
+
+---
