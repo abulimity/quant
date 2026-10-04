@@ -13,6 +13,7 @@
     add        —— 桥的最小烟测（P1.5 遗留）
     raise      —— 故意失败，验证「目标环境失败可传播」
     paper2spec —— **P5.2**：PDF / Markdown → x2strategy 的原始规格
+    paper2dsl  —— **P5.6a**：PDF / Markdown → 受控 DSL（我们自研 prompt，非 paper2spec）
     spec2code  —— **P5.4**：规格 → backtrader 策略源码
 
 ⚠️ **LLM 模型必须显式指定**（§P5.1 V1）：未指定就**明确失败**，
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -95,6 +97,75 @@ def _op_paper2spec(job: dict, params: dict) -> dict:
         "source_chars": len(text),
         "raw_spec": payload,
         "needs_human_review": bool(getattr(spec, "needs_human_review", False)),
+    }
+
+
+def _parse_json_content(content: str) -> dict:
+    """把 LLM 的文本输出解析成 JSON 对象（fail-closed）。
+
+    LLM 常把 JSON 包在 ```json ... ``` 围栏里。这里只做**最小**清理：去围栏；
+    JSON 解析失败即明确报错，**绝不**静默吞掉或猜结构。
+    """
+    text = (content or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise X2EntryError(
+            f"LLM 输出不是合法 JSON（无法吃下）：{exc}\n"
+            f"--- 原始输出（前 500 字）---\n{text[:500]}")
+    if not isinstance(data, dict):
+        raise X2EntryError(
+            f"LLM 输出的 JSON 顶层必须是对象，得到 {type(data).__name__}")
+    return data
+
+
+def _op_paper2dsl(job: dict, params: dict) -> dict:
+    """**P5.6a**：我们自研的「受控 DSL 提取」—— prompt 逼结构化，不经过 paper2spec。
+
+    system = `DSL_SCHEMA`（由 core 传入，单一真相），user = 论文全文。
+    凭据纪律：key 从 `params.api_key_env` 指向的环境变量读，**不写进 job.json / result.json**。
+    """
+    import litellm
+
+    model = _resolve_model(params)
+    text, source = _load_paper(job.get("inputs", {}))
+
+    system = str(params.get("dsl_schema") or "").strip()
+    if not system:
+        raise X2EntryError("paper2dsl 需要 params.dsl_schema（DSL 契约，由 core 传入）")
+
+    api_key_env = str(params.get("api_key_env") or "").strip()
+    api_key = os.environ.get(api_key_env) if api_key_env else None
+    api_base = str(params.get("api_base") or "").strip() or None
+    timeout = int(params.get("timeout_s", 120))
+
+    kwargs: dict = {"timeout": timeout}
+    if api_key:
+        kwargs["api_key"] = api_key
+    if api_base:
+        kwargs["api_base"] = api_base
+
+    resp = litellm.completion(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": text},
+        ],
+        temperature=0.0,
+        **kwargs,
+    )
+    content = resp.choices[0].message.content
+    dsl = _parse_json_content(content)
+    return {
+        "job_id": job.get("job_id"), "env": job.get("env"), "op": "paper2dsl",
+        "model": model,
+        "source": source,
+        "source_chars": len(text),
+        "dsl": dsl,
+        "needs_human_review": bool(dsl.get("needs_human_review", False)),
     }
 
 
@@ -184,6 +255,8 @@ def main(argv: list[str]) -> int:
                   "sum": params.get("a", 0) + params.get("b", 0)}
     elif op == "paper2spec":
         result = _op_paper2spec(job, params)
+    elif op == "paper2dsl":
+        result = _op_paper2dsl(job, params)
     elif op == "validate_code":
         result = _op_validate_code(job, params)
     elif op == "operator_pitfall":
