@@ -7,20 +7,20 @@
 
 sources:
   cn_etf:
-    provider: ""            # 例：akshare
-    enabled: false
+    provider: tushare
+    enabled: true
     datasets: [daily_bars, corporate_actions]
-    credentials_env: ""     # 例：AKSHARE_TOKEN
+    credentials_env: TUSHARE_TOKEN
     calendar: XSHG
-    notes: "境内 ETF 主入口；逐接口固定契约与快照"
+    notes: "境内 ETF 主入口。fund_daily(未复权)→bars_daily；fund_div→corporate_actions；fund_basic(market=E, 排除 REITs)→symbols。volume 单位=手(未换算)。沪、深共用 XSHG 日历（exchange-calendars 无 XSHE），SH/SZ 由 ticker 后缀区分。"
 
   hk_etf:
-    provider: ""            # 例：yfinance
+    provider: tushare       # 名单/元数据走 tushare（hk_basic）；日线行情走 futu
     enabled: false
     datasets: [daily_bars]
-    credentials_env: ""
+    credentials_env: TUSHARE_TOKEN
     calendar: XHKG
-    notes: "需核验代码映射、上市币种、不同币种柜台"
+    notes: "HK 名单/元数据走 tushare hk_basic；行情由 futu 适配器供应（hk_daily 属单独付费权限，不用）。需核验代码映射、上市币种、不同币种柜台。"
 
   us_etf:
     provider: ""            # 例：yfinance

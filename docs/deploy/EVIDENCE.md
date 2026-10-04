@@ -1792,6 +1792,365 @@ uv run --project envs/futu python envs/futu/fetch_plate_stock.py
 
 ---
 
+### tushare 真实供应商接入 + 小范围端到端验证（2026-10-03）
+
+**目的**：按计划 §五/§六，把 `TushareSource` 适配器接入 core 的 `Source` 协议，
+并**先做小样本验证**（2 只 ETF × 1 年跑通 fetch→normalize→快照→DuckDB 查询），
+确认无误后再全量回填。
+
+**接入产出**（core 环境，`src/quantlab/**`）：
+
+| 文件 | 改动 |
+| --- | --- |
+| `ingest/adapters/tushare.py` | `TushareSource`（`name="tushare"`）：`fetch()` 延迟导入 `tushare` SDK 并按 dataset 分发 `fund_basic`/`fund_daily`/`fund_div`；`normalize()` 映射到 `symbols`/`bars_daily`/`corporate_actions` 契约；`available_utc` 保守滞后一日（写 `availability_note`）；新增 `assign_symbol_ids()`（确定性永久 ID，按 ts_code 排序 1..N，**排除 REITs**） |
+| `ingest/realdata.py`（新增） | `build_tushare_bundle()`（fetch→normalize→打包 `FixtureBundle`）；`check_real_invariants()`（通用结构红旗，**不依赖**夹具特有的 `traded`/`analytic_tri`/fx 对拍）；`_derive_snapshot_id()`（内容哈希派生快照 ID，**不含** `downloaded_at`/`snapshot_id`，保证幂等） |
+| `ingest/orchestrator.py` | `ingest()` 新增 `source="tushare"` 分派（`start`/`end`/`symbols` 参数），落 `data/bronze/tushare/`；`ingest_bundle()` 增加 `check=` 参数（合成走 `check_invariants`，真实走 `check_real_invariants`） |
+| `cli.py` | `ingest` 子命令新增 `--source tushare`、`--start/--end/--symbols` |
+| `store/warehouse.py` | `load_snapshot`/`register_snapshot_views` 对**缺失表**改为 `continue` 跳过——部分快照（真实供应商只产 3 张表）合法 |
+
+**适配器实测字段口径（探针逐项核对，`_probe_tushare.py`，用后已删）**：
+
+| 接口 | 实测结论 |
+| --- | --- |
+| `fund_basic(market=E)` | 全名单 **2966 行**；`fund_type` 含 `REITs`（105 只）→ 排除后 **2861 只**；`status` 覆盖 `L/D/I`（含退市，防幸存者偏差 F.7） |
+| `fund_daily` | `vol` = **手**（未折算份数，声明不换算）、`amount` = **千元**；2023 年 510300/159919 各 **242 根**，与 XSHG 日历**零缺失**（见下） |
+| `fund_div` | 字段名是 **`div_cash`**（非计划猜测的 `cash_div`）；**系统性地 2× 重复**（34 行 → 去重 17 行），已在 normalize 去重 |
+| `fund_adj` | `adj_factor` 可用（5000 分，`fund_adj` 确定可用）；本次小样本未落库，全量回填时再进复权因子表 |
+| `hk_basic` | 可调；`curr_type`（HKD）/`trade_unit` 齐全——HK 元数据可走 tushare，行情仍走 futu |
+| 交易日历 | **exchange-calendars 无 `XSHE`**——深市 ETF 与沪市共用 `XSHG` 日历（`.SZ` 映射 `("XSHG","XSHG")`，已修 + 测试固化） |
+
+**端到端小样本（2 只 ETF × 2023，`ingest(source="tushare")` → 快照 → DuckDB 查询）**：
+
+```text
+=== ingest #1 ===
+snapshot_id: tushare-a85f99f524c6cbf6   status: ok
+row_counts: {'symbols': 2861, 'bars_daily': 484, 'corporate_actions': 14}
+=== ingest #2 (idempotent) ===
+snapshot_id: tushare-a85f99f524c6cbf6   status: exists   already_present: True
+=== load_snapshot ===
+loaded: {'symbols': 2861, 'bars_daily': 484, 'corporate_actions': 14}
+=== DuckDB 查询 ===
+symbols rows: 2861
+bars rows: 484
+corporate_actions rows: 14
+bars 每标的行数: 159919.SZ 242 / 510300.SH 242
+FK 检查 (bars.symbol_id 未在 symbols 的行数): 0
+available_utc 与 ts 分离检查 (available_utc < ts 的行数): 0
+```
+
+**逐条判定**：
+
+- [x] **V2** 全流程跑通：`fund_basic`(名单) → 分配永久 ID → `fund_daily`/`fund_div`(循环) → normalize → `check_real_invariants` → 快照 → DuckDB 查询
+- [x] **V3** 幂等：二次 ingest 返回 `exists`、`already_present=true`，**不重写、不重复登记**（快照 ID 由内容哈希派生，不依赖 `downloaded_at` 时钟）
+- [x] **V3** FK 自洽：`bars_daily.symbol_id` 全落在 `symbols` 内（0 孤儿）
+- [x] **V3** 时序纪律：`available_utc >= ts` 全成立（0 未来函数行）——`available_utc` 保守滞后一日并已 `availability_note` 披露
+- [x] **V3** 日历对账：510300.SH + 159919.SZ 各 242 根，与 XSHG 2023 交易日**零缺失**（停牌日形态待 P2.6 质量规则阶段细核）
+- [x] **V1** 部分快照装载：真实快照只产 3 张表（symbols/bars_daily/corporate_actions），`load_snapshot` 与视图注册正确跳过缺失的 4 张，不报错
+
+**回归**：生成合成夹具 `synth-v1-613c5986a898`（P5 测试依赖的派生数据，此前在本 worktree 缺失致 12 个 P5 用例 error）后全量回归：
+
+```text
+$ .\.venv\Scripts\python.exe -m unittest discover -t . -s tests
+Ran 366 tests in 184.880s
+OK
+```
+
+**待办（全量回填前，均不阻塞本次小样本验证）**：
+
+1. **复权因子**：`fund_adj` 未进契约快照，总收益计算需补复权因子表 + silver/gold 清洗衔接（计划 §二 2.4 F.6）。
+2. **宏观 / index 基准 / hk_basic / US / FX**：本次仅境内 ETF 的 `symbols`/`bars_daily`/`corporate_actions`；其余按计划走 futu/yfinance/宏观接口，属后续回填范围。
+3. **`traded` 列**：真实数据无 `traded`（停牌日无行），`quality/clean.py` 的 session-status/gold 视图依赖 `traded`——真实数据停牌日判定（缺口 vs 停牌）是 P2.6 的**延期项**，全量回填时需按「日历开盘但无行 = 缺口」三态重写。
+4. **限流**：当前 `rate_limit_delay=0.2s`（~300 次/分，留 500 分额度余量）；全量 2861 只 ETF 回填约 12–30 分钟，需幂等可重跑（已保证）。
+
+---
+
+### 全量回填 + 对账 + 修复（2026-10-04）
+
+**全量回填结果**（`ingest --source tushare --start 2015-01-01 --end 2024-12-31`，2861 只非 REIT 境内 ETF）：
+
+```text
+snapshot_id: tushare-02d1572bb0f220c7   status: ok   exit: 0   耗时: 69.9 min
+row_counts: {'symbols': 2861, 'bars_daily': 1989262, 'corporate_actions': 1448}
+combined_content_hash: 6beb7b19bdb2d2c2be07c2b2729560bdcd65c97b118aa2d96be8a49e007b9d7b
+```
+
+**结构红旗（`check_real_invariants`）全清**：0 非正价格 / 0 OHLC 区间自洽违例 / 0 bars 主键重复 / 0 未来函数（`available_utc < ts`）/ 0 孤儿 symbol_id / 0 corporate_actions 主键重复。已入库的数据在结构上自洽。
+
+**对账（以 exchange-calendars XSHG 应取交易日为基准，逐标的比对 expected vs actual）**：发现 3 类偏差，全部定位到**元数据或适配器**，非 bars 本身错误：
+
+| 群体 | 数量 | 定性 |
+| --- | --- | --- |
+| `list_date` 缺失（NaT） | 138 | 近期上市、`fund_basic` 元数据未回填 `list_date`；对账按「2015 年起上市」误算 expected，实为窗口后上市 → 0 bar 正确 |
+| `list_date` > 2024-12-31 | 674 | 窗口后上市 → 0 bar 正确（名单是「现在」快照，含研究期末之后上市者） |
+| `list_date` 在窗口内、status=D | 82 | 其中 70 只 **2015 前已退市**（封闭/分级基金 `184xxx`/`500xxx`/`150xxx`）→ 0 bar 正确 |
+| `list_date` 在窗口内、status=L | 9 | **真缺口候选**（见下） |
+| 负缺口（actual > expected） | 45 | `fund_basic.list_date` **偏晚**（8 只 `20210101` 占位、其余散乱），bars 实际更早 → bars 正确、元数据错 |
+
+**发现并修复适配器缺陷（8 只静默缺失）**：
+
+9 只「窗口内上市、status=L、0 bar」逐只回查 `fund_daily`：8 只**重新拉取即返回 126–730 根**（`159552.SZ`/`159553.SZ`/`159577.SZ`/`159556.SZ`/`159555.SZ`/`159640.SZ`/`159613.SZ`/`159751.SZ`，均为 2021-12–2024-06 上市的中证2000增强/美国50/碳中和/信息安全/港股通科技 ETF）；仅 `161211.SZ`（联接基金）真无日线。
+
+根因：`fund_daily` 偶发对「应有数据」的标的返回**空 DataFrame（非异常）**，而 `_call_with_retry` 只重试异常、不重试空表 → 8 只被静默当「无数据」跳过。
+
+修复（`tushare.py`）：新增 `_fetch_fund_daily()`——异常仍走 `_call_with_retry`，空表另做 `_FUND_DAILY_EMPTY_ATTEMPTS=2` 次、`0.5s` 退避的重试后再接受；空表仍是合法结局（退市/窗口外上市），不掩盖真缺口。离线测试 `TestFetchFundDailyEmptyRetry`（3 例）固化。
+
+**回归**（`python -m unittest tests.test_realdata tests.test_tushare`）：
+
+```text
+Ran 34 tests in 3.563s
+OK
+```
+
+**结论与后续**：已入库 bars 结构自洽；真实缺失 = 8 只瞬时空表（已修复）。修复后需**重跑全量回填**产出修正快照（幂等、新 `snapshot_id`），`fund_basic.list_date` 的 45 处偏晚 + 138 处缺失属 tushare 侧元数据缺陷，回填后在 silver 层用 `bars_daily.min(ts)/max(ts)` 交叉校正 `listed_on/delisted_on`（P2.6 质量规则阶段）。
+
+**修正回填复核（同刻，空表重试已生效）**：
+
+```text
+snapshot_id: tushare-704bee7c042ed05c   status: ok   exit: 0
+row_counts: {'symbols': 2861, 'bars_daily': 1992886, 'corporate_actions': 1448}
+bars_daily 较上轮 +3624（即 8 只补回）
+```
+
+- 8 只缺失标的全部补齐：`159552.SZ`(126) / `159553.SZ`(175) / `159555.SZ`(256) / `159556.SZ`(236) / `159577.SZ`(210) / `159613.SZ`(709) / `159640.SZ`(595) / `159751.SZ`(730)，各覆盖 `listed_on`→2024-12-31，与上轮逐只回查行数一致。
+- `161211.SZ`（联接基金）仍 0 根 —— 真无日线，正确。
+- 零 bar 标的数 903 → **895**（即仅补回 8 只，其余 895 为窗口后上市/退市/元数据缺失，属预期）。
+- 结构红旗复核仍全清：0 非正价 / 0 区间违例 / 0 未来函数 / 0 主键重复。
+
+本轮「对账 → 定位 → 修复 → 重跑 → 复核」闭环完成；`tushare-704bee7c042ed05c` 为当前修正快照，`tushare-02d1572bb0f220c7`（旧）保留但已被更正结果取代。
+
+---
+
+## 数据位置迁移：从 worktree 并入主项目 `D:\project\quant\data`（2026-10-04）
+
+**现象**：tushare 快照落在 worktree `C:\Users\abulimity\orca\workspaces\quant\获取tushare数据\data\bronze\tushare\`，而非主项目 `D:\project\quant\data`。
+
+**根因（非 orca 设置问题）**：数据根路径按 `__file__` 相对解析——
+`orchestrator.py:43` `TUSHARE_ROOT = Path(__file__).resolve().parents[3] / "data/bronze/tushare"`、
+`db.py:25` `PROJECT_ROOT = Path(__file__).resolve().parents[3]`。
+git worktree 是独立物理检出，`parents[3]` 即 worktree 根 → 从 worktree 跑 ingest 就写 worktree 自己的 `data/`。主项目里已有的 `synthetic`/`futu` 是先前在主项目跑的，故分家。
+
+**迁移动作**：
+
+1. 复制两快照（10 文件）worktree → `D:\project\quant\data\bronze\tushare\`，sha256 逐文件校验 **0 失配**：
+   ```text
+   files=10 mismatches=0
+   ```
+2. 台账并入主仓库：从 worktree 仓库读 6 行 tushare `ingest_runs`，`INSERT OR REPLACE` 进 `D:\project\quant\data\warehouse.duckdb`。
+   主仓库 `ingest_runs` 共 **13 行**（7 synthetic + 6 tushare）；`v_bars_latest` 解析到 `tushare-704bee7c042ed05c`（修正快照）。
+   （前置：需先关闭 DBeaver 对主仓库的**写**连接，否则 Windows 独占锁使只读也打不开。）
+3. 清理 worktree 冗余：删 `data/bronze/tushare/` 与 `data/warehouse.duckdb`（台账已并入主仓库后即冗余）。
+
+**最终状态**：tushare 数据唯一落点 = `D:\project\quant\data\bronze\tushare\`（两快照，~49MB）；主仓库台账已登记。worktree 仅余 `data/bronze/synthetic/`（与主项目同 `snapshot_id` 的确定性重复，可删可留）。
+
+---
+
+## 剩余 tushare 数据集回填（fund_adj / index / hk / macro）（2026-10-04）
+
+**目标**：把境内 ETF 之外的全部剩余 tushare 数据补齐——复权因子 `fund_adj`、基准指数
+`index_basic`+`index_daily`、港股名单 `hk_basic`、宏观最小集（cn_cpi/cn_ppi/cn_gdp/shibor）。
+
+### 1. 代码改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `ingest/adapters/tushare.py` | `DATASETS` 扩至 8 个；`fetch()/normalize()` 新增 `fund_adj`/`index_symbols`/`index_daily`/`hk_symbols`/`macro_series` 分支；`_MACRO_SERIES`（4 系列：CN_CPI_YOY/CN_PPI_YOY/CN_GDP_YOY/CN_SHIBOR_3M，各带单位/接口/值列/时间列/时间粒度/发布滞后天数）；`_fetch_shibor_paged`（shibor 2000 行上限向前翻页）；`_macro_ts`（月→月末/季→季末/日→当日） |
+| `fixtures/synth.py` | `CONTENT_KEYS` +4（`fund_adj`/`index_symbols`/`index_daily`/`hk_symbols`），供 `content_hashes`/`write_snapshot` 兼容 |
+| `ingest/realdata.py` | `_PREID_KEYS` +5；`_assemble_bundle`（通用收尾：派生 snapshot_id + 按 tag_spec 回填审计列）；`build_tushare_index_bundle`/`build_tushare_hk_bundle`/`build_tushare_macro_bundle`；`fund_adj` 并入 `build_tushare_bundle`（同标的池、同快照）；`check_real_invariants` 重写为**按表存在性**守卫 + 新增 fund_adj/index_daily/macro/index_symbols/hk_symbols 检查 |
+| `ingest/orchestrator.py` | `ingest()` 分派 `tushare`/`tushare_index`/`tushare_hk`/`tushare_macro` 四个源（均落 `data/bronze/tushare/`，`check_real_invariants`）；`_mark_ok` 的 `note` 由写死 "synthetic fixture" 改为 `{source} snapshot` |
+| `cli.py` | `--source` help 列出四个 tushare 源 |
+| `scripts/backfill_tushare.py`（新增） | 回填驱动：`winreg` 读 `HKCU\Environment\TUSHARE_TOKEN` → 进程内注入 `os.environ` → 调 `ingest()`；落点固定 `D:\project\quant\data`（与 worktree 数据目录解耦）；**token 不打印不落盘** |
+| `tests/test_tushare_remaining.py`（新增） | 20 用例：`_macro_ts`、5 个新 normalize、`check_real_invariants` 对新表的无 KeyError/结构红旗、`_derive_snapshot_id`/`content_hashes` 对新表无 KeyError |
+| `tests/test_tushare.py` | `test_unknown_dataset_raises` 的「未知数据集」样例由 `fund_adj`（现已合法）改为 `not_a_real_dataset` |
+
+### 2. 小样本 smoke（真实接口，不落主项目）
+
+```text
+index_symbols rows: 8000 | missing benchmarks: []      # 10 个 curated 基准全在名单内
+index_daily 000300.SH 2024-01 rows: 22                 # 列：ts_code/ts/open/high/low/close/pre_close/change/pct_chg/volume/amount
+fund_adj 510300.SH 2024-01 rows: 22
+hk_symbols rows: 2792
+macro_series rows (2024): 279                          # available_utc = ts + 15d（CPI/PPI）
+```
+
+### 3. trade_cal 交叉核对（仅核对，不落库）
+
+```text
+SSE vs XSHG: tushare_open=2431 xcal_sessions=2431 only_tushare=0 only_xcal=0
+```
+
+`tushare trade_cal(exchange=SSE, is_open=1)` 与 core 已在用的 `exchange_calendars.XSHG`
+在 2015–2024 窗口**完全一致**（2431=2431，0 差异）→ 沿用 exchange-calendars 无需改口径。
+
+### 4. 全量回填（落主项目 `D:\project\quant\data`）
+
+| 源 | snapshot_id | row_counts |
+| --- | --- | --- |
+| `tushare_index` | `tushare_index-ffa42af4c69a78bd` | `{index_symbols: 8000, index_daily: 23092}` |
+| `tushare_hk` | `tushare_hk-f47ed6896ac27499` | `{hk_symbols: 2792}` |
+| `tushare_macro` | `tushare_macro-5263a25dcde59090` | `{macro_series: 2755}` |
+| `tushare`（fund_adj 并入，含 bars/分红重取） | `tushare-18a84ba609fece5d` | `{symbols: 2861, bars_daily: 1993234, corporate_actions: 1448, fund_adj: 2156140}` |
+
+> 注：`fund_adj` 并入 `source=tushare`（同一标的池、同一快照，保证复权因子与 bars 同源一致），
+> 故该源需重取 2861 只 ETF 的 bars/分红/复权因子，产出**新快照**（内容哈希含 fund_adj → 新 snapshot_id）。
+> 新快照 `tushare-18a84ba609fece5d` 取代旧 `tushare-704bee7c042ed05c`（旧快照保留、被更正结果取代）；
+> bars 较上轮 +348（1992886→1993234，复权因子回填时 tushare 侧数据微调，结构红旗仍全清）。
+
+### 5. 回归
+
+```text
+python -m unittest tests.test_tushare tests.test_tushare_remaining tests.test_realdata
+Ran 53 tests in 3.657s
+OK
+
+python -m unittest discover -t . -s tests
+Ran 388 tests in 162.148s
+OK
+```
+（全量 388 用例：此前仅 1 处失败 = `test_unknown_dataset_raises` 用了现已合法的 `fund_adj`，已修并重跑确认全绿。）
+
+---
+
+## 时间范围扩展至最新交易日（2026-09-30）（2026-10-04）
+
+**动机**：上一节四个源的研究窗口止于 `2024-12-31`（`STUDY_END`）。用户要求把本次获取的
+数据时间范围扩展到**最新交易日**。`exchange_calendars.XSHG` 给出 2026-10-04 当天之前
+最近一个交易日 = **2026-09-30**（国庆休市前最后一个交易日）。
+
+**改动**：`scripts/backfill_tushare.py` 的 `END` 由写死 `2024-12-31` 改为
+`exchange_calendars.XSHG` 动态求「今天（含）前最后一个交易日」；`START` 保持 2015-01-01。
+
+### 结果（落主项目 `D:\project\quant\data`）
+
+| 源 | 新 snapshot_id | row_counts（旧 → 新） |
+| --- | --- | --- |
+| `tushare` | `tushare-f4f7c81a15b5779c` | `{symbols: 2861, bars_daily: 1993234 → 2724037, corporate_actions: 1448 → 2174, fund_adj: 2156140 → 2845102}` |
+| `tushare_index` | `tushare_index-86318b52ea0fbe04` | `{index_symbols: 8000, index_daily: 23092 → 27332}` |
+| `tushare_macro` | `tushare_macro-a424ac296fabfad8` | `{macro_series: 2755 → 3235}` |
+| `tushare_hk` | `tushare_hk-f47ed6896ac27499`（不变，跳过） | `{hk_symbols: 2792}` |
+
+**说明**：
+- `symbols` 保持 2861：`fund_basic(market=E)` 是**当前全名单**（无日期窗口），不受 `END`
+  影响 → symbol_id 不因扩展而移位（永久 ID 稳定）。
+- `tushare_hk` 是 `hk_basic` 静态名单、无时间序列，本轮不重取（快照不变）。
+- 三个源旧快照原封保留；新快照为独立不可变快照，`ingest_runs` 三态 `ok`。
+- `check_real_invariants` 在 ingest 内已通过（进程 exit 0，无结构红旗）。
+
+---
+
+### E2E-A · 契约链端到端（sample-ma-cross，时序金叉/死叉）（2026-10-04）
+
+**目的**：落实 `docs/deploy/HANDOFF.md` §7.6 重估结论「规格为真相」。P5.6 的「能力域内 E2E」分两段：E2E-A（确定性契约链 `spec → spec2weights → 引擎`，手写规格，不含 LLM 解析层）与 E2E-B（论文 → spec 的 LLM 解析，`map_to_contract` 对 exit/cross 映射有缺口，待定）。本步先跑 E2E-A，零外部依赖、可重复。
+
+**执行**：
+
+```powershell
+# 新建测试文件
+#   tests/test_p5_ma_cross_e2e.py
+$env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m unittest tests.test_p5_ma_cross_e2e -v
+```
+
+**产出**：
+- `tests/test_p5_ma_cross_e2e.py` —— 6 项测试，4 组：
+  1. `TestSpecIsContractLegal`：手写规格过 P3.2 闸门（G4 无未来函数 / G5 回看够 / G9 有 entry）。
+  2. `TestSignalEventsMatchPaper`：`emit_signals` 的金叉 +1 / 死叉 −1 逐日等于手算穿越（`cross_above/below` 事件语义，独立 pandas 复算）。
+  3. `TestWeightsTimelineMatchesPaper`：权重时间线逐格对拍持仓状态；预热期无持仓。
+  4. `TestCrossOverEngineParity`：reference 消费完整交叉循环；backtrader 与 reference 在「一次建仓 + 清仓」形态上对拍（容差 1e-4）。
+
+**验证**：
+- [x] **6/6 通过**（约 5.7s），退出 `OK`。
+
+**诊断记录（首次失败 → 修正测试期望，非实现缺陷）**：
+- `test_weights_track_hold_state` 首跑失败：实际权重在金叉后第一个休市调仓日（2016-02-09）为 0，而我手算的裸持仓状态为 1。逐格排查确认 `position_state` 日频状态与手算**完全一致**（divergence=0）；分歧只在「权重时间线」投影。
+- 根因：标的 1（SYN-CN-A）无「监管停牌」，但合成日历里**交易所休市日**（春节/国庆等，共 167 天）`close=NaN`、`traded=False`。`emit_weights` 按 F.4.5 在休市调仓日不表达目标（权重 0）；`position_state` 则把休市视为「维持前值」。故「权重」=「状态 ∧ 可成交 ∧ 动量预热」，不是裸状态。
+- 修正：测试期望改为 `状态 ∧ tradable ∧ (closes.notna() & closes.shift(lookback).notna())`，逐格精确对拍（0 分歧）。`fresh` 门槛对标的不影响（仅 1 根 bar 为 False 且不落在调仓日）。
+
+**备注**：
+- 口径统一 `momentum_window = lookback = 60`（默认 63 会把 60–62 日出现的金叉多卡 3 日，见测试 docstring）。
+- 引擎间偏差容差 1e-4；`event_panel` 压缩变化点，避免 backtrader 连续重复目标触发 Margin（P5.5 已知 L1）。
+
+---
+
+### E2E-B · 受控 DSL + fail-closed parser（§P5.6a，三 V3 验收）（2026-10-04）
+
+**目的**：落实用户拍板的 E2E-B 设计 ——「用 prompt 把输出收敛到一个受控的 DSL/JSON
+（不是纯自然语言，也不是理想化假设），再写一个小 parser 消费这个 DSL。prompt 只负责
+逼出结构化，parser 只负责吃掉结构化，谁都不需要猜自然语言。」核心交付是 `quantlab.x2.dsl`
+这个**纯函数 parser**：合法 DSL → 合规 `StrategySpec`；非法 DSL → 明确拒绝（fail-closed），
+**不静默兜底**。语义保真归人工对拍（§7.6「规格为真相」：绝不因 `valid=True` 单独放行）。
+
+**产出文件**：
+- `src/quantlab/x2/dsl.py`（**新增**）—— 受控 DSL parser。白名单与 `emit.evaluate` 的
+  `_SUPPORTED_OPS` 一一对应；`dsl_to_spec` 解析信封（name/entry 必填/exit 可选/sizing/lookback），
+  缺 entry 直接抛 `DslParseError`（防「静默全现金」）；`DSL_SCHEMA` 作为 system prompt 单一真相。
+- `tests/test_p5_dsl.py`（**新增**）—— 20 项确定性测试，钉住三 V3。
+- `src/quantlab/x2/paper2spec.py`（**改**）—— `OP_ALIASES` 加 `cross_above/below`；新增
+  `_BINARY_OPS`：扁平映射器遇到二元/事件算子 **fail-closed 拒绝**（引导走 DSL 路径）；
+  `map_to_contract` 现在解析 `exit`（原先 `exit=None` 硬编码）；新增 `extract_dsl()`。
+- `envs/x2/entry.py`（**改**）—— 新增 `paper2dsl` 算子：`DSL_SCHEMA` 作 system、论文全文作
+  user，`litellm.completion(temperature=0.0)`；`_parse_json_content` 去 ```json 围栏、JSON 失败即报错；
+  key 从 `params.api_key_env` 指向的环境变量读（**不写进 job.json/result.json**）。
+- `src/quantlab/x2/__init__.py`（**改**）—— 导出 `DslParseError` / `dsl_to_spec` / `parse_dsl_node` / `DSL_SCHEMA` / `extract_dsl`。
+
+**执行与输出**：
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m unittest tests.test_p5_dsl -v
+# → Ran 20 tests in 4.134s  OK
+
+$env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m unittest tests.test_p5_paper2spec -v
+# → Ran 17 tests in 0.005s  OK（回归：exit/OP_ALIASES 改动无回归）
+
+$env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m quantlab.x2.llm --check
+# → usable: True（anthropic/deepseek-v4-pro；ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL 均已设置）
+```
+
+**验证（三 V3）**：
+
+- [x] **V3 #1** parser 接受合法 DSL → 合规 `StrategySpec`；非法 DSL → 明确拒绝。
+  `TestParserAccepts`（窗口自动 shift、cross_above 双子树、golden 建出参考树、过闸门、exit=null 合法）
+  + `TestParserRejects`（未知算子、缺 op、非对象节点、窗口非正整数、未知字段、二元 arity 错、args 非数组、
+  shift n<1、缺 entry、顶层非对象——均抛 `DslParseError`）。
+- [x] **V3 #2** `sample-ma-cross.md` 真跑一遍 prompt→DSL→parser→gate→`spec2weights`，
+  权重与 E2E-A 手写规格**逐格一致**。真实 LLM 产出见下，`weights_parity == "exact"`。
+- [x] **V3 #3** 语义偏离可见：`TestSemanticDeviationVisible` 证 `gt`/`lt` 结构合法被收下（parser 不猜语义），
+  但权重与参考 `cross_above/below` **最大绝对差 > 0.5**（可观测偏离），`needs_human_review` 标记被保留。
+  另有 `TestWhitelistSync` 钉住 `DSL_ALL_OPS == evaluate._SUPPORTED_OPS`（防超集导致发射期崩溃）。
+
+**真跑（真实 LLM 调用，非 mock）结果**：
+
+```json
+{
+  "extract_ok": true,
+  "model": "anthropic/deepseek-v4-pro",
+  "source": "text:sample-ma-cross.md", "source_chars": 778,
+  "dsl": {
+    "name": "MA Crossover Timing", "universe_assets": [],
+    "entry": {"op": "cross_above", "args": [{"op":"sma","field":"close","window":20},
+                                            {"op":"sma","field":"close","window":60}]},
+    "exit":  {"op": "cross_below", "args": [{"op":"sma","field":"close","window":20},
+                                            {"op":"sma","field":"close","window":60}]},
+    "sizing": {"top_n": 1, "rebalance": "W-MON"},
+    "lookback": 60, "needs_human_review": false
+  },
+  "parse_ok": true, "gate_passed": true, "gate_errors": [],
+  "entry_op": "cross_above", "exit_op": "cross_below",
+  "lookback": 60, "top_n": 1,
+  "weights_parity": "exact"
+}
+```
+
+**备注**：
+- LLM **一次即产出了语义正确的 DSL**（`cross_above`/`cross_below`，未偏离成 `gt`/`lt`），
+  说明 schema 里的「上穿用 cross_above，勿用 gt/lt 代替」约束有效；偏离场景由确定性测试兜底覆盖。
+- 论文 §2 未指定标的代码，故 `universe_assets=[]`，`universe=(1,)` 由调用方按内部 symbol_id 显式给出
+  （不猜映射，与 `map_to_contract` 同口径）。
+- `extract_dsl` 只传 `api_key_env`（环境变量**名**）+ `api_base`（URL，非凭据）经 job.json；
+  key 值由 x2 环境自身从环境变量读取，**不落盘**（CLAUDE.md 凭据纪律）。
+- 附带：`test_p5_paper2spec.py` 第 14 行 docstring 的 `SyntaxWarning: invalid escape '\\.'`
+  为**既有**问题（非本次改动引入），不在本步范围。
+
+---
+
 ### futu OpenD · 日线历史 K 线（不复权 + 复权因子）试点（2026-10-04）
 
 **目的**：从 futu OpenD 拉取港股日线历史 K 线，口径按用户拍板——**不复权原始价**（`AuType.NONE`）+ **同时拉取复权因子**（`get_rehab`）分开存，落 bronze 不可变快照（试点 5 只、近 2 年）。

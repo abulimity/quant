@@ -2,14 +2,15 @@
 
 > **一次性进度快照**，用于新会话接续执行。
 > 与 `CLAUDE.md` 的分工：`CLAUDE.md` 是**长期约定**（每个会话都适用），本文件是**当前进度**（完成后即失效）。
-> 更新时间：2026-10-02
+> 更新时间：2026-10-04
 
 ---
 
 ## 1. 一句话状态
 
-**P5 进行中：P5.1–P5.5 已完成且验证；P5.6 已用真实研报跑通「Parse→Extract→agent 生成代码→校验」，但产出代码有实质语义偏差，且口径决策仍悬。**
-（更新时间：2026-10-02；本会话全过程见 §7.7）
+**P5 进行中：P5.1–P5.5 已完成且验证；P5.6 已用真实研报跑通「Parse→Extract→agent 生成代码→校验」，但产出代码有实质语义偏差；「规格 vs 代码」口径已由 §7.7 的 H1–H6 证据指向「规格为真相」（待你确认落定，见 §7.6「重估」）。**
+**数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2026-09-30，272.4 万根 bar）并完成对账修复；剩余数据集（复权因子 `fund_adj`、基准指数 `index`、港股名单 `hk_basic`、宏观最小集）已接入并全部回填，时间范围扩展到最新交易日 2026-09-30（最新快照 `tushare-f4f7c81a15b5779c`）；数据并入主项目 `D:\project\quant\data`。**
+（更新时间：2026-10-04；P5 全过程见 §7.7，口径重估见 §7.6，tushare 回填见 §7.8，剩余数据集见 §7.9）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
 
 > ✅ **已解除**：`bt` 多标的换仓的 **3.6% 偏差** = **停牌顺延缺口**（bt 无「交易日掩码」，
@@ -25,7 +26,7 @@
 > - x2strategy 本质是 **agent skill**：①②（解析/规格）是**包内函数**（可经桥拿），
 >   ③ backtrader 代码由 **agent 现场写**（**包里无生成器**），④ 回测/诊断由 agent 跑。
 > - 链路**停在闸门且失败可见**（新增 **G9** 拦住了曾经的「静默全现金」）。
-> → **待人工裁定**：「**规格为真相** vs **代码为真相**」。详见 §7.6。
+> → 口径**已由证据指向「规格为真相」**（§7.7 的 H1–H6 证明「代码」会静默漂移、`validate_code` 查不出），待你确认落定。详见 §7.6「重估」。
 > - **本会话新增（2026-10-02，§7.7）**：真实研报已跑通 Parse+Extract（`spec.json` 已产出）；
 >   agent 生成的 `strategy.py` 过 `validate_code`，但**静态审阅发现 H1–H6 语义偏差**（会改变结果）；
 >   x2strategy 的 `max_tokens=8192` **写死**、推理模型下必崩，**已打补丁**（在 `.venv` 内，重建即失）。
@@ -56,12 +57,13 @@
 | D 盘剩余 | ≈ 275 GiB ✅ |
 | **管理员权限** | **无** —— 需要管理员的操作会失败，须记录为 `SKIPPED(no admin)` 并交人工 |
 | 长路径 | `LongPathsEnabled=0`，**已人工豁免**（`GateP0.long_paths=WAIVED`） |
-| 数据供应商 | **留空**，用合成夹具驱动全部验证 |
+| 数据供应商 | **cn_etf 已接 tushare**（境内 ETF 全量回填完成）；hk/us/fx 仍留空，其余用合成夹具 |
 | 网络 | 未验证数据接口可用性；**`raw.githubusercontent.com` 在本机不可达**（litellm 成本表拉取超时） |
 | **环境边界**（P1 定） | core（根）/ `envs/vbt` / `envs/x2`，**各自独立 `uv.lock`**；**backtrader 归 core**，未建 `envs/btrader` |
 | **打包**（P2 定） | 根项目改为 **`uv_build` 可编辑安装**（`[build-system]` + `module-root="src"`），故 `import quantlab` 可用；CLI 入口 `quantlab = quantlab.cli:main`。`uv.lock` 仅 1 行变化，**依赖零漂移** |
 | **测试栈**（P2 定） | **`unittest`**（全库统一，CLAUDE.md 二选一）。命令：`python -m unittest discover -t . -s tests` |
 | **夹具快照** | `data/bronze/synthetic/synth-v1-613c5986a898/`（gitignored，可确定性重建）；DuckDB 台账 `data/warehouse.duckdb`（**派生**，可重建） |
+| ⚠️ **数据路径解析** | 数据根按 `__file__` 相对解析（`orchestrator.py:43` / `db.py:25`）。**从 worktree 跑 ingest 会写到 worktree 自己的 `data/`，而非主项目**。canonical 数据目录 = `D:\project\quant\data`；跨 worktree 写数据务必用 `--out` / `--warehouse` 显式指向主项目 |
 | ⚠️ **DuckDB 并发**（P2 实测） | ① 写者对**其他进程**独占：写者持有时连**只读**也打不开 → 「单写多读」仅在**无活跃写者**时成立；② **同进程**内对同一库文件**不得**持有配置不同的连接（RO/RW）→ 用连接注入 |
 | ⚠️ **跑测试前** | 设 `PYTHONIOENCODING=utf-8`（否则中文断言信息在子进程里会 UnicodeDecodeError） |
 | 三环境 Python | 均 **3.12.13**（起点即通过，无需下调） |
@@ -295,7 +297,7 @@
   cross_sectional）/ `output_type`（scalar·boolean·series vs **ranking·vector·matrix**）/
   `position_sizing.long_short`（本平台 F.1 **只做多**）。→ 闸门可**自动判定能力域内外**。
 
-### ⛔ 卡点：口径未定（**待人工裁定**）
+### ⛔ 卡点：口径未定（**待人工裁定** —— 2026-10-04 已据 §7.7 重估，见下方「重估」）
 
 | 方案 | 含义 | 代价 |
 | --- | --- | --- |
@@ -305,11 +307,32 @@
 > **为什么需要 A**：x2 只产 backtrader 代码；**若不自研 `spec2weights`，vectorbt 与 bt
 > 无法复用同一规格**（手册 §P5.5「关键补口」原文）。A 正是让另外三个引擎有角色的机制。
 
-### 下一步（等决策）
+### 重估（2026-10-04，据 §7.7 的 H1–H6 证据）
 
-- 选 **A** → 先定第二个子问题：解析层是**自建**（把指标 id / 条件伪代码 → `Expr`）还是
-  **改 prompt 让 x2 直接产出我方 schema**；再落「按 spec 元数据判能力域」的闸门规则。
-- 选 **B** → 重新定义三引擎的适用范围，架构退化为 backtrader 单引擎为主。
+§7.7 用真实研报跑通 x2strategy 后，静态审阅 `strategy.py` 发现 **H1–H6 语义偏差**，
+其中 H1/H2/H3/H5 **会静默改变结果**，而 `validate_code` 却报 `valid=True, 0 err, 0 warn`。
+这条证据**改变了 A/B 的权重**：
+
+| 方案 | 重估后结论 |
+| --- | --- |
+| **B. 代码为真相** | ❌ **被证据否决**。「代码」路径唯一的自动闸门 `validate_code` 只查语法/结构/指标名，**结构性查不出语义漂移**；H2（HRP 退化等权）、H1（风险袖套不缩放）、H5（跳空冻结存量）证明代码是 spec 的**有损投影**。以它当真相 = 在不可验证、静默漂移的工件上建平台。 |
+| **A. 规格为真相** | ✅ **唯一可行**。spec 可被我们的 `map_to_contract` + `spec2weights` **确定性、fail-closed、可测**地投影，跨引擎一致性得以保留。 |
+
+> **但这不等于 P5.6 打通。** §7.7 的「跑通」是 **x2strategy 冒烟**（明确**未碰平台契约层**），
+> 且用的是**横截面组合构建**研报（HRP / 横截面 rank / 风险袖套）——落在 **#14 能力域外**。
+> 真正未证明的是**能力域内**时序样例 `sample-ma-cross.md` 走 `map_to_contract → spec2weights →
+> 回测` 这一整条契约链。重估把卡点从「A or B 二选一」**收敛**为两件具体事：
+> ① 能力域内 E2E（时序样例）；② 横截面算子族 #14（真实研报属此域，另立任务）。
+
+### 下一步（待你确认 A，然后）
+
+- **确认 A**（证据已指向，B 无需再议）。
+- **先做能力域内 E2E**：跑 `sample-ma-cross.md`（时序）→ `map_to_contract` → `spec2weights`
+  → backtrader/reference 对拍，证明契约链在**我们可表达的形态**上正确。这是目前唯一的未证环节。
+- **解析层子问题仍待定**（自建指标/伪代码 → `Expr`，还是改 prompt 直出我方 schema）。
+  建议在能力域内 E2E 跑通后再定 —— 时序样例规格简单，先验证契约本身。
+- **真实研报（横截面）**仍归 **#14**，不作为 P5.6 验收对象；§7.7 的 H1–H6 作为
+  「代码不可当真相」的反面证据留存，不进入主线。
 
 ---
 
@@ -348,6 +371,93 @@
 `envs/x2/run_paper2spec.py`（Parse+Extract 独立驱动）、`_llm_probe.py`（通道探针）、
 `_diag_extract_l2.py`（根因诊断）、`run_x2_extra_tests.py`（`validate_code` + `operator_pitfall`）、
 `X2STRATEGY_PATCH.md`（补丁记录）、`X2_PAPER2CODE_REVIEW.md`（静态审阅）。
+
+---
+
+## 7.8 本会话：tushare 境内 ETF 全量回填 + 对账修复（2026-10-04）
+
+**目标**：按计划 §一–§六，接入 tushare 为真实数据源，全量回填境内 ETF 并做日历对账。
+
+### 结果
+
+| 阶段 | 状态 | 关键数字 |
+| --- | --- | --- |
+| 小样本验证（先行） | ✅ | 2 ETF × 2023 跑通 fetch→normalize→快照→DuckDB；242 根/只，XSHG 日历零缺失 |
+| 全量回填（第一轮） | ✅ | `tushare-02d1572bb0f220c7`；2861 标的 / 1,989,262 bar / 1,448 分红；69.9 min |
+| 对账 | ⚠️ 发现 1 缺陷 | 结构红旗全清，但 8 只窗口内 ETF 被静默跳过（瞬时空表） |
+| 修复 + 重跑 | ✅ | `tushare-704bee7c042ed05c`；1,992,886 bar（+3,624）；结构红旗仍全清 |
+
+### 关键结论
+
+1. **结构红旗全清**：0 非正价 / 0 区间违例 / 0 未来函数 / 0 主键重复 / 0 孤儿。
+2. **真实缺陷 1 处已修**：`fund_daily` 偶发返回空 DataFrame（非异常），`_call_with_retry`
+   只重试异常不重试空表 → 8 只被静默当无数据。新增 `_fetch_fund_daily()`（空表重试
+   2 次 / 0.5s），离线测试 `TestFetchFundDailyEmptyRetry` 固化。
+3. **对账「缺口」几乎全是口径**：674 只窗口后上市 + 138 只 list_date 缺失 + 82 只退市基金
+   + 45 只 list_date 偏晚（负缺口）——bars 正确，属 tushare 元数据缺陷。
+4. **留 P2.6**：`fund_basic.list_date` 的 45 偏晚 + 138 缺失，silver 层用
+   `bars_daily.min(ts)/max(ts)` 交叉校正 `listed_on/delisted_on`。
+
+### 新增/改动（已入库）
+
+`ingest/adapters/tushare.py`（`_fetch_fund_daily` 空表重试）、`tests/test_realdata.py`
+（`TestFetchFundDailyEmptyRetry`）、`docs/deploy/EVIDENCE.md`（回填+对账+修复证据）。
+
+### 待续（数据层）
+
+- ~~复权因子 `fund_adj` 未进契约快照（F.6 总收益待补）。~~ → ✅ 已并入 tushare 快照（§7.9）。
+- ~~宏观 / index 基准 / hk_basic。~~ → ✅ 已回填（§7.9）。
+- US / FX 仍走 yfinance / futu，属后续回填范围。
+
+### 数据位置迁移（2026-10-04）
+
+tushare 数据原先落在 worktree 的 `data/`（根因：数据根按 `__file__` 相对解析，见 §3），
+已并入主项目唯一数据目录 `D:\project\quant\data`：
+- Parquet 真相：`D:\project\quant\data\bronze\tushare\{tushare-02d1572bb0f220c7, tushare-704bee7c042ed05c}`（10 文件，sha256 校验 0 失配）。
+- 台账：6 行 tushare `ingest_runs` 已并入 `D:\project\quant\data\warehouse.duckdb`（共 13 行），`v_bars_latest` → `tushare-704bee7c042ed05c`。
+- worktree 侧 `data/bronze/tushare/` 与 `data/warehouse.duckdb` 已删。
+
+---
+
+## 7.9 本会话：剩余 tushare 数据集回填（2026-10-04）
+
+**目标**：补齐境内 ETF 之外的剩余 tushare 数据——复权因子 `fund_adj`、基准指数 `index`、
+港股名单 `hk_basic`、宏观最小集（cn_cpi/cn_ppi/cn_gdp/shibor）。
+
+### 结果
+
+| 源 | snapshot_id | row_counts |
+| --- | --- | --- |
+| `tushare_index` | `tushare_index-ffa42af4c69a78bd` | index_symbols 8000 + index_daily 23092（10 基准 × 2015–2024） |
+| `tushare_hk` | `tushare_hk-f47ed6896ac27499` | hk_symbols 2792 |
+| `tushare_macro` | `tushare_macro-5263a25dcde59090` | macro_series 2755（CPI/PPI/GDP/shibor × 2015–2024） |
+| `tushare`（fund_adj 并入） | `tushare-18a84ba609fece5d` | `{symbols: 2861, bars_daily: 1993234, corporate_actions: 1448, fund_adj: 2156140}` |
+
+### 关键结论
+
+1. **`fund_adj` 并入 `source=tushare`**（同标的池、同快照），保证复权因子与 bars 同源一致；
+   因内容哈希含 fund_adj，产出**新 snapshot_id**（旧快照保留、被新结果取代）。
+2. **`trade_cal` 交叉核对**：tushare SSE 与 exchange-calendars XSHG 2015–2024 **完全一致**
+   （2431=2431）→ 沿用 core 现有日历。
+3. **宏观口径**：`available_utc = 观测期末 + 发布滞后`（CPI/PPI 15d、GDP 30d、shibor 1d）。
+4. **回填驱动** `scripts/backfill_tushare.py`：winreg 读 token（Bash 子进程看不到 setx 的
+   user env），进程内注入，落点固定主项目 `D:\project\quant\data`。
+
+### 7.9.1 时间范围扩展至最新交易日（2026-09-30）
+
+用户要求把本次数据时间范围扩展到最新交易日。`exchange_calendars.XSHG` 给出 2026-10-04
+之前最近一个交易日 = **2026-09-30**（国庆休市前）。`scripts/backfill_tushare.py` 的 `END`
+改为动态求「今天（含）前最后一个交易日」，`START` 仍 2015-01-01；重跑三个带日期的源。
+
+| 源 | 新 snapshot_id | row_counts（旧 → 新） |
+| --- | --- | --- |
+| `tushare` | `tushare-f4f7c81a15b5779c` | `{symbols: 2861, bars_daily: 1993234 → 2724037, corporate_actions: 1448 → 2174, fund_adj: 2156140 → 2845102}` |
+| `tushare_index` | `tushare_index-86318b52ea0fbe04` | index_symbols 8000 + index_daily 23092 → 27332 |
+| `tushare_macro` | `tushare_macro-a424ac296fabfad8` | macro_series 2755 → 3235 |
+| `tushare_hk` | （不变，跳过） | hk_symbols 2792 |
+
+- `symbols` 保持 2861：`fund_basic(market=E)` 是当前全名单（无日期窗口），symbol_id 不因扩展移位。
+- 三个源旧快照原封保留，新快照为独立不可变快照；`check_real_invariants` 通过（进程 exit 0）。
 
 ---
 
