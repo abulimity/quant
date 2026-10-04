@@ -62,7 +62,8 @@ def register_snapshot_views(
     for table in SNAPSHOT_TABLES:
         path = directory / f"{table}.parquet"
         if not path.is_file():
-            raise FileNotFoundError(f"快照缺少表文件: {path}")
+            # 部分快照（真实供应商只产某几张表）合法：跳过缺失表，不把「没这张表」当错误。
+            continue
         con.execute(
             f"CREATE OR REPLACE VIEW {prefix}{table} AS "
             f"SELECT * FROM read_parquet('{_posix(path)}')"
@@ -125,7 +126,8 @@ def load_snapshot(
     for table in SNAPSHOT_TABLES:
         path = Path(root) / snapshot_id / f"{table}.parquet"
         if not path.is_file():
-            raise FileNotFoundError(f"快照缺少表文件: {path}")
+            # 部分快照（真实供应商只产某几张表）合法：跳过缺失表。
+            continue
         cols = ", ".join(_contract_columns(con, table))
         before = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         # 只投影契约列：夹具的 traded 等派生列不属于契约表

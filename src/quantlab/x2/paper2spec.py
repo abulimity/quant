@@ -33,6 +33,7 @@ from quantlab.contract.types import (
     StrategySpec,
 )
 from quantlab.engines.bridge import run_in_env
+from quantlab.x2.dsl import DSL_SCHEMA
 from quantlab.x2.llm import LlmConfig, load_llm_config
 
 X2_ENTRY = "envs/x2/entry.py"
@@ -44,10 +45,16 @@ OP_ALIASES: dict[str, str] = {
     "std": "std", "stdev": "std", "rolling_std": "std",
     "momentum": "momentum", "roc": "momentum",
     "shift": "shift", "lag": "lag", "delay": "lag",
+    "cross_above": "cross_above", "cross_below": "cross_below",
 }
 
 # 需要「价格字段 + 窗口」两个参数的算子：我们会自动补 shift(1)（§P3.2 G4）
 _WINDOW_OPS = frozenset({"sma", "ema", "std", "momentum"})
+
+# 二元/事件算子：本映射器（扁平 `{name, field, params}`）**无法**正确构造出
+# 两个子表达式，故收进别名表但 `_build` 里 fail-closed 拒绝 —— 引导走 DSL 路径
+# （`quantlab.x2.dsl`），而不是伪造一棵「看着像合规」的单参树。
+_BINARY_OPS = frozenset({"cross_above", "cross_below"})
 
 
 @dataclass
@@ -104,6 +111,45 @@ def extract_raw_spec(
     )
 
 
+def extract_dsl(
+    paper_path: str | Path,
+    *,
+    model: str | None = None,
+    llm: LlmConfig | None = None,
+    title: str = "",
+    workdir: str | Path | None = None,
+) -> dict:
+    """经桥跑一次「受控 DSL 提取」（我们自己的 prompt→DSL，§P5.6a），返回 x2 侧原始结果。
+
+    与 `extract_raw_spec` 的区别：这里**不再走 x2strategy 的 paper2spec**，而是把我们
+    自研的 `DSL_SCHEMA` 作为 system prompt 交给 LLM，逼它产出受控 JSON。返回的 dict
+    里含 `dsl` 字段，交由 `quantlab.x2.dsl.dsl_to_spec` 吃掉。
+
+    ⚠️ **凭据纪律（CLAUDE.md）**：绝不把 API key 写进 job.json（那是落盘文件）。
+    这里只传 `api_key_env`（环境变量**名**）与 `api_base`（URL，**非凭据**），
+    由 x2 环境自己从环境变量读 key 值。未配置时 `cfg.require()` **明确失败**。
+    """
+    paper = Path(paper_path)
+    if not paper.is_file():
+        raise FileNotFoundError(f"论文不存在: {paper}")
+
+    cfg = (llm or load_llm_config()).require()
+    resolved_model = model or cfg.model_id()
+
+    return run_in_env(
+        "x2", X2_ENTRY,
+        {"job_id": f"paper2dsl-{paper.stem}", "engine": "x2",
+         "params": {"op": "paper2dsl", "model": resolved_model,
+                    "title": title,
+                    "api_key_env": cfg.api_key_env,
+                    "api_base": cfg.resolved_api_base() or "",
+                    "timeout_s": cfg.timeout_s,
+                    "dsl_schema": DSL_SCHEMA}},
+        inputs={"paper": paper},
+        workdir=Path(workdir) if workdir else None,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 映射：x2strategy 原始规格 → 我们的契约
 # --------------------------------------------------------------------------- #
@@ -142,6 +188,13 @@ def _build(op_name: str, node: dict, unmapped: list[str]) -> tuple[Expr | None, 
     mapped = OP_ALIASES.get(op_name.lower())
     if mapped is None:
         unmapped.append(f"未映射的算子 {op_name!r}")
+        return None, unmapped
+
+    if mapped in _BINARY_OPS:
+        unmapped.append(
+            f"算子 {op_name!r} 是二元/事件算子（cross_above/cross_below），"
+            f"本映射器无法从扁平描述构造两个子表达式 —— 请走受控 DSL 路径"
+            f"（quantlab.x2.dsl）。")
         return None, unmapped
 
     raw = node.get("params") or node.get("parameters") or node.get("args") or []
@@ -238,8 +291,12 @@ def map_to_contract(
 
     logic = raw.get("logic_pipeline") or raw.get("logic") or []
     entry, unmapped = (None, [])
+    exit_expr = None
     if isinstance(logic, list) and logic:
         entry, unmapped = _as_expr(logic[0])
+        if len(logic) >= 2:
+            exit_expr, exit_unmapped = _as_expr(logic[1])
+            unmapped = unmapped + exit_unmapped
     elif logic:
         entry, unmapped = _as_expr(logic)
     else:
@@ -262,7 +319,7 @@ def map_to_contract(
         or "from-paper",
         universe=tuple(universe),
         entry=entry,
-        exit=None,
+        exit=exit_expr,
         sizing=SizingSpec(top_n=top_n),
         costs=F8_SCENARIOS[10],          # **显式**取 F.8 情景，而非裸默认（闸门 G7）
         source_paper=source_paper,

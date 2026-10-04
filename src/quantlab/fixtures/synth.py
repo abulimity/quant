@@ -50,6 +50,11 @@ CONTENT_KEYS: dict[str, list[str]] = {
     "trading_calendar": ["exchange", "ts"],
     "macro_series": ["series_id", "ts", "snapshot_id"],
     "fundamentals": ["symbol_id", "period_end", "as_of_date", "item", "snapshot_id"],
+    # 真实 tushare 的非契约 raw 表（真实快照也会经过 content_hashes / write_snapshot）
+    "fund_adj": ["symbol_id", "ts", "snapshot_id"],
+    "index_symbols": ["ts_code"],
+    "index_daily": ["ts_code", "ts", "snapshot_id"],
+    "hk_symbols": ["ts_code"],
 }
 
 _CALENDAR_CACHE: dict[str, object] = {}

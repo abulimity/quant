@@ -814,6 +814,7 @@ class BacktestRunner(Protocol):
   - [ ] **V3** 产出物**必须**通过 P3.2 的 lint 闸门才允许入库
   - [ ] **V3** 保留 `source_paper` 元信息（可追溯）
 - **完成定义**：样例可产出合规规格。
+- **已确认变更（见 P5.6a，已落地）**：提取层改为「自研 prompt→DSL + parser」，不再依赖 x2strategy 的 `paper2spec` 提取；本节 V2 样例以 P5.6a 的 DSL 契约为准。
 
 ### P5.3 规格注册与闸门串联
 
@@ -844,9 +845,52 @@ class BacktestRunner(Protocol):
 
 ### P5.6 端到端验收
 
-- **验证**：
+**能力域内 E2E 分两段**：E2E-A（确定性契约链 `spec → spec2weights → 引擎`，手写规格）与 E2E-B（论文 → spec 的 LLM 提取层）。两者均已落地。
+
+- **已落地 · E2E-A**：`tests/test_p5_ma_cross_e2e.py` 6/6 通过——手写规格过 P3.2 闸门 → `emit_signals` 逐日对拍手算金叉/死叉（`cross_above/below` 事件语义）→ 权重时间线逐格对拍持仓状态 → reference/backtrader 对拍（1e-4）。证据见 `docs/deploy/EVIDENCE.md` 的「E2E-A」章节。
+- **已落地 · E2E-B**：`src/quantlab/x2/dsl.py` 受控 DSL parser + `tests/test_p5_dsl.py` 20/20 通过——真跑 `sample-ma-cross.md` 经 prompt→DSL→parser→闸门→`spec2weights`，权重与 E2E-A 手写规格**逐格一致**（exact parity）；畸形 DSL fail-closed。证据见 `docs/deploy/EVIDENCE.md` 的「E2E-B」章节。
+- **验证（全链路，待 E2E-B 落地后一并勾选）**：
   - [ ] **V2** 完整链路：样例论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 → bt 组合 → 报告，全程无人工改文件
   - [ ] **V4** 全链路重跑，结果在容差内一致
+
+#### P5.6a 论文 → spec 提取层重设计（E2E-B，**已确认并落地**）
+
+**背景**：HANDOFF §7.6 重估判定「规格为真相 A」。现有 `map_to_contract` 对 x2strategy 27 字段 `logic_pipeline` 做保守映射，实测（§7.7 H1–H6）产出 `valid=True` 却语义静默偏离（HRP→等权、rank→原始动量…）。根因是「解析自由格式表达式」这一层既脆弱又不可审计。本方案把它换成「**受控 DSL + fail-closed parser**」。
+
+**分解原则**：prompt 只负责「逼出结构化」，parser 只负责「吃掉结构化」，谁也不碰自然语言。受控 DSL 把语义偏离从「藏在代码里」变成「一眼可读的 spec」，再由闸门 + `needs_human_review` 兜底。**它解决语法/映射问题，不自动解决语义忠实问题**——语义忠实仍靠 fail-closed 人工复核，绝不因 `valid=True` 单独放行。
+
+**（1）DSL 契约**：= `Expr`/`StrategySpec` 的 JSON 化，非新语言。允许算子 = `evaluate` 已支持集合（`field/const/shift/lag/sma/rolling_mean/std/ema/momentum/gt/lt/ge/le/eq/cross_above/cross_below/and_/or_/not_`）。窗口算子用高层形 `{op, field, window}`，parser 自动补 `shift(field,1)`（复用 `_build`），LLM 永不手写因果位移。示例：
+
+```json
+{
+  "entry": {"op": "cross_above", "args": [
+    {"op": "sma", "field": "close", "window": 20},
+    {"op": "sma", "field": "close", "window": 60}
+  ]},
+  "exit":  {"op": "cross_below", "args": [
+    {"op": "sma", "field": "close", "window": 20},
+    {"op": "sma", "field": "close", "window": 60}
+  ]},
+  "sizing": {"top_n": 1, "rebalance": "W-MON"},
+  "lookback": 60
+}
+```
+
+**（2）prompt 契约**：枚举算子白名单 + 上面的 schema 字面；明确「只输出 schema，禁 prose、禁代码、禁补白」；未命中白名单或形状不符 → 明确失败，不猜。
+
+**（3）parser 改动（`src/quantlab/x2/paper2spec.py`）**：
+  - `OP_ALIASES` 补 `cross_above`/`cross_below`（后续 #14 的 rank/cross_sectional_rank/condition 逐个受控加入，不开放任意算子）。
+  - `map_to_contract` 不再硬编码 `exit=None`（现 `paper2spec.py:265`）：解析 entry/exit 两个条目，能确定才映射，拿不准记 `unmapped`。
+  - 产出仍走 `lint_spec` 闸门（G4/G5/G7/G9），与人写规格同 scrutiny。
+
+**（4）提取环节归属（随本方案确认）**：改用**我们自己的 prompt→DSL**（在 x2 环境，LLM/litellm 在那儿），不再走 x2strategy 的 `paper2spec`；x2strategy 的价值保留在 codegen（横截面/矩阵等超出能力域部分）。代价：自维护 prompt + DSL schema。
+
+**验证（本节 Gate，已勾选）**：
+  - [x] **V3** parser 接受合法 DSL → 合规 `StrategySpec`；畸形 DSL（未知算子/缺字段/非 schema）→ **明确拒绝**，无静默 fallback
+  - [x] **V3** `sample-ma-cross.md` 真跑一次 prompt→DSL→parser→闸门→`spec2weights`，产出的权重与 E2E-A 手写规格**行为一致**（对拍）
+  - [x] **V3** 语义偏离可见：LLM 把 `cross_above` 写成 `gt` 或窗口写错 → 产出物经 `needs_human_review` 标记，**不静默入库**
+
+**完成定义**：`sample-ma-cross.md` 经「prompt→DSL→parser→闸门→权重」产出与手写规格一致的合规 spec，且畸形输入 fail-closed。
 
 ### 🚦 Gate P5
 

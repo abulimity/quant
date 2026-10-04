@@ -17,6 +17,11 @@ _EXPORTS = {
     "LlmConfig": "quantlab.x2.llm",
     "LlmNotConfigured": "quantlab.x2.llm",
     "load_llm_config": "quantlab.x2.llm",
+    "DslParseError": "quantlab.x2.dsl",
+    "dsl_to_spec": "quantlab.x2.dsl",
+    "parse_dsl_node": "quantlab.x2.dsl",
+    "DSL_SCHEMA": "quantlab.x2.dsl",
+    "extract_dsl": "quantlab.x2.paper2spec",
 }
 
 __all__ = sorted(_EXPORTS)
