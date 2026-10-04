@@ -22,9 +22,7 @@ import sys
 import uuid
 from pathlib import Path
 
-# src/quantlab/engines/bridge.py -> src/quantlab/engines -> src/quantlab -> src -> 项目根
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-ENVS_DIR = PROJECT_ROOT / "envs"
+from quantlab.paths import ENVS_DIR, PROJECT_ROOT, RUNS_DIR
 
 
 class BridgeError(RuntimeError):
@@ -96,7 +94,7 @@ def run_in_env(
     inputs = inputs or {}
     job_id = job.get("job_id") or uuid.uuid4().hex
     if workdir is None:
-        workdir = PROJECT_ROOT / "runs" / job_id
+        workdir = RUNS_DIR / job_id
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
 

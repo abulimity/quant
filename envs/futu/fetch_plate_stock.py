@@ -26,7 +26,7 @@ from pathlib import Path
 
 from futu import RET_OK, OpenQuoteContext, SortField
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(os.environ.get("QUANT_ROOT", str(Path(__file__).resolve().parents[2])))
 DATA_ROOT = PROJECT_ROOT / "data" / "bronze" / "futu" / "plate_stock"
 
 

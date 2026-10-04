@@ -27,8 +27,7 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 
 from quantlab.contract.types import CostModel
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+from quantlab.paths import CHECKOUT_ROOT, DATA_ROOT, PROJECT_ROOT
 
 
 class EngineError(RuntimeError):
@@ -134,7 +133,7 @@ def env_lock_hash(root: Path | None = None) -> str:
 def git_sha(root: Path | None = None) -> str:
     """当前提交 SHA；不在 git 仓库时返回 `NO_GIT`（不抛异常，但会在元数据里显形）。"""
     try:
-        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(root or PROJECT_ROOT),
+        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(root or CHECKOUT_ROOT),
                              capture_output=True, text=True, encoding="utf-8", timeout=10)
     except (OSError, subprocess.SubprocessError):
         return "NO_GIT"
@@ -147,7 +146,7 @@ def git_sha(root: Path | None = None) -> str:
 def _is_dirty(root: Path | None) -> bool:
     """工作树有未提交改动时标注 `-dirty` —— 否则「同一 SHA 两次结果不同」无从解释。"""
     try:
-        out = subprocess.run(["git", "status", "--porcelain"], cwd=str(root or PROJECT_ROOT),
+        out = subprocess.run(["git", "status", "--porcelain"], cwd=str(root or CHECKOUT_ROOT),
                              capture_output=True, text=True, encoding="utf-8", timeout=10)
     except (OSError, subprocess.SubprocessError):
         return False
@@ -238,7 +237,7 @@ def load_bundle_from_fixture(root: str | Path | None = None,
     from quantlab.quality.clean import adjust_prices
 
     sid = snapshot_id or S.snapshot_id()
-    directory = snapshot_dir(sid, root or (PROJECT_ROOT / "data" / "bronze" / "synthetic"))
+    directory = snapshot_dir(sid, root or (DATA_ROOT / "bronze" / "synthetic"))
     bundle = read_snapshot(sid, directory.parent)
     bars, actions = bundle.tables["bars_daily"], bundle.tables["corporate_actions"]
 

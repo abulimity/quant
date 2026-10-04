@@ -28,7 +28,7 @@ import sys
 import time
 import tomllib
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+ROOT = pathlib.Path(os.environ.get("QUANT_ROOT", str(pathlib.Path(__file__).resolve().parents[2])))
 CFG = ROOT / "config" / "llm.toml"
 
 

@@ -42,11 +42,12 @@ from quantlab.ingest.realdata import (
     check_real_invariants,
 )
 from quantlab.fixtures.spec import STUDY_START, STUDY_END
+from quantlab.paths import DATA_ROOT
 from quantlab.store.db import connect, warehouse_path
 from quantlab.store.migrate import apply_migrations
 
-DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "data" / "bronze" / "synthetic"
-TUSHARE_ROOT = Path(__file__).resolve().parents[3] / "data" / "bronze" / "tushare"
+DEFAULT_ROOT = DATA_ROOT / "bronze" / "synthetic"
+TUSHARE_ROOT = DATA_ROOT / "bronze" / "tushare"
 
 # 这些数据集参与 watermark（数据边界）计算
 _WATERMARK_TABLES = ("bars_daily", "fx_rates", "macro_series")

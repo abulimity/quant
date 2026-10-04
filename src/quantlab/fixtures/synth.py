@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 
 from quantlab.fixtures import spec as S
+from quantlab.paths import DATA_ROOT
 from quantlab.store.atomic import atomic_write_parquet, atomic_write_text, rmtree, staging_dir
 from quantlab.store.canonical import content_hash
 
@@ -588,7 +589,7 @@ def read_snapshot(snapshot_id: str, root: str | Path) -> FixtureBundle:
 # --------------------------------------------------------------------------- #
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="生成合成夹具快照（§P2.2）")
-    parser.add_argument("--out", default="data/bronze/synthetic",
+    parser.add_argument("--out", default=str(DATA_ROOT / "bronze" / "synthetic"),
                         help="快照根目录（默认 data/bronze/synthetic）")
     parser.add_argument("--force-new", action="store_true",
                         help="快照已存在时先删除再重建（**仅用于开发**；默认拒绝覆盖）")
