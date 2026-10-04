@@ -1832,3 +1832,29 @@ PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history
 - **未套 `bars_daily` 契约**：与板块列表一致，本次为原始 bronze 快照。归一化到契约需先配 `symbol_map`/currency（`sources.yaml` 仍空），留作后续。
 
 ---
+
+### futu OpenD · 全量拉取（472 只）—— 撞到两道限流，部分成功（2026-10-04）
+
+**目的**：试点 5 只跑绿后，按用户指示「开始获取全量数据」——对 HK.Fund 全部 472 只拉取近 2 年日线（不复权）+ 复权因子。
+
+**执行**：
+
+```powershell
+PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history_kline.py
+```
+
+**结果**：**部分成功**。`ok_codes=96`、`failed_codes=376`；kline 43015 行 × 13 列、rehab 1379 行 × 30 列，已原子落成快照 `20261004_115547_925918`。脚本按设计「单只失败不中断其余，收集进 manifest.errors 并最终非零退出」，故退出码 1（**非崩溃**）。
+
+**失败原因三类**（详见 manifest.errors，逐 code 可追溯）：
+1. **频率限流**（约占多数）：「获取历史K线/复权因子频率太高，每30秒最多60次」。首版 `--delay 0.3`（≈6.7 次/秒）远超 2 次/秒上限 → **已将默认改为 `--delay 1.2`**（每只代码 2 个请求 ≈1.7 次/秒，留边际）。
+2. **额度用尽**（约占半数）：「历史K线额度不足，已用正股额度 100/100，7天后全部释放」。印证用户提示的「订阅额度 100」——**正股历史K线额度 = 每7天100只**；本轮 + 试点 5 只 + 中间一次崩溃重试已把额度打满。
+3. **空表 2 只**（`HK.02849`、`HK.03051`）：近 2 年窗口内无数据（退市/新上市），合法非错。
+
+**回读校验**：`kline.parquet` shape `(43015, 13)`、`code` 唯一 98；`rehab.parquet` shape `(1379, 30)`、`code` 唯一 125。与 `ok_codes=96` 的差是「部分成功」的必然结果——某只代码可能 kline 成功但 rehab 被限流（或反之），其已成功的部分仍留在快照，失败的子请求记入 errors。
+
+**结论 / 后续**：
+- 限流已修（`--delay 1.2`）；**额度是硬顶**——免费档每7天只能拉约 100 只正股历史K线。拉全 472 只需分 ~5 批（每7天一批）或升级账户；当前额度已满，本周内再跑只会继续报「额度不足」。
+- 本轮已到手 96 只完整（kline+rehab 双清）标的的原始快照，可先推进这些标的的 `bars_daily` 归一化（`symbol_map`/currency 仍未配）。
+- 复权口径同试点：`autype=NONE` 原始价 + `rehab.parquet` 因子分存，`return_kind=price_return`（F.6）。
+
+---

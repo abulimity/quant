@@ -1,23 +1,27 @@
 """请求 futu OpenD 的日线历史 K 线（**不复权**）与**复权因子**，落成 bronze 不可变快照。
 
 用法（在仓库根目录执行）：
-    uv run --project envs/futu python envs/futu/fetch_history_kline.py [--limit 5] [--start 2024-10-04] [--end 2026-10-04]
+    uv run --project envs/futu python envs/futu/fetch_history_kline.py [--limit N] [--delay 0.3] [--start 2024-10-04] [--end 2026-10-04]
 
 标的清单来源（三选一，优先级从高到低）：
     --codes HK.00700,HK.00005         显式代码列表
     --plate-snapshot PATH             从已有 plate_stock.parquet 读 `code` 列
-    缺省                               内部调 get_plate_stock("HK.Fund")
+    缺省                               内部调 get_plate_stock("HK.Fund")（默认全量）
 
 默认目标：`data/bronze/futu/history_kline/<snapshot_id>/`
     kline.parquet     # request_history_kline(autype=NONE) 原始 DataFrame，列名保持原样
     rehab.parquet     # get_rehab(code) 复权因子原始 DataFrame（补 `code` 列以便溯源）
-    manifest.json     # 请求上下文 + 复权口径披露 + 两表 rows/columns
+    manifest.json     # 请求上下文 + 复权口径披露 + 两表 rows/columns + errors
 
 口径（F.6 披露）：
     · autype=NONE（不复权）—— 原始价格不可变；复权因子单独存 rehab.parquet，可重算前/后复权。
     · return_kind=price_return —— 不复权原始价不是总收益，不得冒充 total_return。
     · host/port 默认 127.0.0.1:11111，可用环境变量 FUTU_HOST / FUTU_PORT 覆盖。
-    · 快照不可变，原子写；ret != RET_OK 或空表时 fail-loud，不静默成功。
+    · 快照不可变，原子写；单只代码失败不中断其余，收集进 manifest.errors 并最终非零退出（不静默成功）。
+    · futu 两道限流（实测撞过）：
+        1) 历史K线 / 复权因子各「每30秒最多60次」（≈2 次/秒）——频率超限报「频率太高」。
+        2) 正股历史K线额度「每7天100只」——额度打满后报「额度不足（100/100），7天后释放」。
+      --delay 默认 1.2s（每只代码 2 个请求 ≈ 1.7 次/秒，留安全边际，规避第 1 道；第 2 道只能靠分批/升级）。
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -101,7 +106,7 @@ def _resolve_codes(args, quote_ctx) -> tuple[list[str], str]:
 
     ret, df = quote_ctx.get_plate_stock(args.plate_code, sort_field=SortField.CODE, ascend=True)
     if ret != RET_OK:
-        print(f"get_plate_stock 失败：ret={ret}，error={quote_ctx.get_last_error()}", file=sys.stderr)
+        print(f"get_plate_stock 失败：ret={ret}，error={df}", file=sys.stderr)
         return [], "plate_api"
     if df is None or len(df) == 0:
         print(f"get_plate_stock 返回空表（plate_code={args.plate_code}），拒绝继续。", file=sys.stderr)
@@ -115,7 +120,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--codes", help="显式代码列表，逗号分隔（优先级最高）")
     parser.add_argument("--plate-snapshot", help="从已有 plate_stock.parquet 读 code 列")
     parser.add_argument("--plate-code", default="HK.Fund")
-    parser.add_argument("--limit", type=int, default=5, help="只抓排序后前 N 只（默认 5，试点）")
+    parser.add_argument("--limit", type=int, default=None, help="只抓排序后前 N 只（默认全部）")
+    parser.add_argument("--delay", type=float, default=1.2, help="每只代码之间的限频间隔秒数（默认 1.2，对应 futu「每30秒最多60次」；0 关闭）")
     parser.add_argument("--start", help="开始日期 YYYY-MM-DD（默认 end 往前 730 天）")
     parser.add_argument("--end", default=_today_iso(), help="结束日期 YYYY-MM-DD（默认今天）")
     parser.add_argument("--host", default=os.environ.get("FUTU_HOST", "127.0.0.1"))
@@ -137,9 +143,10 @@ def main(argv: list[str] | None = None) -> int:
 
     kline_frames: list[pd.DataFrame] = []
     rehab_frames: list[pd.DataFrame] = []
-    rehab_errors: dict[str, str] = {}
+    errors: dict[str, list[str]] = {}
+    ok_count = 0
 
-    for code in codes:
+    for i, code in enumerate(codes):
         ret, kline, _ = quote_ctx.request_history_kline(
             code,
             start=start,
@@ -149,28 +156,32 @@ def main(argv: list[str] | None = None) -> int:
             max_count=None,
         )
         if ret != RET_OK:
-            print(
-                f"request_history_kline({code}) 失败：ret={ret}，error={quote_ctx.get_last_error()}",
-                file=sys.stderr,
-            )
-            quote_ctx.close()
-            return 1
-        if kline is None or len(kline) == 0:
-            print(f"request_history_kline({code}) 返回空表，拒绝落盘。", file=sys.stderr)
-            quote_ctx.close()
-            return 1
-        kline_frames.append(kline)
+            errors.setdefault(code, []).append(f"kline: ret={ret} {kline}")
+        elif kline is None or len(kline) == 0:
+            errors.setdefault(code, []).append("kline: 空表")
+        else:
+            kline_frames.append(kline)
 
         ret, rehab = quote_ctx.get_rehab(code)
         if ret != RET_OK:
-            rehab_errors[code] = str(quote_ctx.get_last_error())
+            errors.setdefault(code, []).append(f"rehab: ret={ret} {rehab}")
         elif rehab is not None and len(rehab) > 0:
             rehab = rehab.copy()
             rehab.insert(0, "code", code)  # get_rehab 返回表无 code 列，补上以溯源
             rehab_frames.append(rehab)
         # ret == RET_OK 但空表：标的无除权记录，合法，跳过即可
 
+        if code not in errors:
+            ok_count += 1
+
+        if args.delay and i < len(codes) - 1:
+            time.sleep(args.delay)
+
     quote_ctx.close()
+
+    if not kline_frames:
+        print("全部代码拉取失败，拒绝落盘。", file=sys.stderr)
+        return 1
 
     kline_df = pd.concat(kline_frames, ignore_index=True)
     rehab_df = (
@@ -202,7 +213,9 @@ def main(argv: list[str] | None = None) -> int:
         "kline_columns": list(kline_df.columns),
         "rehab_rows": int(len(rehab_df)),
         "rehab_columns": list(rehab_df.columns),
-        "rehab_errors": rehab_errors,
+        "ok_codes": ok_count,
+        "failed_codes": len(errors),
+        "errors": errors,
     }
 
     write_snapshot(
@@ -210,18 +223,19 @@ def main(argv: list[str] | None = None) -> int:
         snapshot_dir,
         manifest,
     )
-    print(
-        json.dumps(
-            {
-                "snapshot_dir": str(snapshot_dir),
-                "kline_rows": manifest["kline_rows"],
-                "rehab_rows": manifest["rehab_rows"],
-                "codes": codes,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    summary = {
+        "snapshot_dir": str(snapshot_dir),
+        "kline_rows": manifest["kline_rows"],
+        "rehab_rows": manifest["rehab_rows"],
+        "total_codes": len(codes),
+        "ok_codes": ok_count,
+        "failed_codes": len(errors),
+        "errors": errors,
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if errors:
+        print(f"部分失败：{len(errors)}/{len(codes)} 只代码出错，详见 manifest.errors", file=sys.stderr)
+        return 1
     return 0
 
 
