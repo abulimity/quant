@@ -21,9 +21,9 @@ from pathlib import Path
 
 import duckdb
 
-# store/db.py -> store -> quantlab -> src -> 项目根
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_WAREHOUSE = PROJECT_ROOT / "data" / "warehouse.duckdb"
+from quantlab.paths import DUCKDB_PATH
+
+DEFAULT_WAREHOUSE = DUCKDB_PATH
 
 WAREHOUSE_ENV = "QUANTLAB_WAREHOUSE"
 

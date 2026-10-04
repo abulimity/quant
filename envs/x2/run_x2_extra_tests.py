@@ -13,7 +13,7 @@ import os
 import pathlib
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+ROOT = pathlib.Path(os.environ.get("QUANT_ROOT", str(pathlib.Path(__file__).resolve().parents[2])))
 SLUG = "多资产-ETF-轮动策略-固收-视角下动态组合管理的构建与实践"
 SPEC = ROOT / "runs" / "x2" / SLUG / "spec.json"
 

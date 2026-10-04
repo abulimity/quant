@@ -12,10 +12,11 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import tomllib
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+ROOT = pathlib.Path(os.environ.get("QUANT_ROOT", str(pathlib.Path(__file__).resolve().parents[2])))
 CFG = ROOT / "config" / "llm.toml"
 SLUG = "多资产-ETF-轮动策略-固收-视角下动态组合管理的构建与实践"
 

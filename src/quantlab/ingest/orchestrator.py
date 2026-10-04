@@ -33,10 +33,11 @@ from quantlab.fixtures.synth import (
     snapshot_dir,
     write_snapshot,
 )
+from quantlab.paths import DATA_ROOT
 from quantlab.store.db import connect, warehouse_path
 from quantlab.store.migrate import apply_migrations
 
-DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "data" / "bronze" / "synthetic"
+DEFAULT_ROOT = DATA_ROOT / "bronze" / "synthetic"
 
 # 这些数据集参与 watermark（数据边界）计算
 _WATERMARK_TABLES = ("bars_daily", "fx_rates", "macro_series")

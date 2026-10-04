@@ -1791,3 +1791,45 @@ uv run --project envs/futu python envs/futu/fetch_plate_stock.py
 - 编码：parquet 内为正确 UTF-8；PowerShell 控制台显示乱码是控制台 GBK 代码页的显示问题，非数据问题（已用 codepoint 断言排除）。
 
 ---
+
+### orca 工作树操作规范 + 数据/runs/envs 路径改代码（2026-10-04）
+
+**目的**：orca 为每个任务建 git worktree，数据抓取类任务的 agent 把脚本/数据/`.venv`
+全部写进工作树（`data/`、`runs/`、`.venv/` 均 gitignored，工作树清理即静默丢失）。
+引入「工作树=代码，其余回主检出 `D:\project\quant`」规范，并把 data/runs/envs/warehouse
+的路径从「跟随检出根（`Path(__file__).resolve().parents[N]` 推导）」改为「跟随 canonical 根」。
+
+**产出**：
+- `CLAUDE.md` 新增「使用 orca 时的操作规范（强制）」小节（落点表 / 路径显式指向主检出 / 跑码不重建 .venv / 脚本归属 / 数据写入并发）
+- 新增 `src/quantlab/paths.py`：`CHECKOUT_ROOT`（git 溯源用）vs `PROJECT_ROOT`（canonical，`QUANT_ROOT` 可覆盖）+ `DATA_ROOT`/`RUNS_DIR`/`DUCKDB_PATH`/`ENVS_DIR`/`CONFIG_DIR`
+- 6 个核心模块改用 `quantlab.paths`：`engines/base.py`、`store/db.py`、`engines/bridge.py`、`x2/llm.py`、`ingest/orchestrator.py`、`fixtures/synth.py`
+- 5 个 envs 独立脚本内联 `QUANT_ROOT` 读取：`envs/futu/fetch_plate_stock.py`、`envs/x2/{run_paper2spec,_llm_probe,_diag_extract_l2,run_x2_extra_tests}.py`
+
+**验证命令**（在 orca 工作树内，`$env:PYTHONPATH='<worktree>\src'`，用主检出的 `.venv` python）：
+
+```powershell
+# 1) 路径解析：未设 QUANT_ROOT 回退工作树；设后指向主检出
+python -c "from quantlab.paths import DATA_ROOT,RUNS_DIR,ENVS_DIR,DUCKDB_PATH; print(DATA_ROOT,RUNS_DIR,ENVS_DIR,DUCKDB_PATH)"
+$env:QUANT_ROOT='D:\project\quant'; python -c "..."
+
+# 2) 核心模块导入 + git_sha（CHECKOUT_ROOT 溯源）
+& 'D:\project\quant\.venv\Scripts\python.exe' -c "import quantlab.engines.base as b; print(b.git_sha())"
+
+# 3) 回归（QUANT_ROOT 指向主检出）
+$env:QUANT_ROOT='D:\project\quant'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p2_3_store tests.test_p2_5_ingest tests.test_p2_2_fixtures tests.test_p5_llm tests.test_engine_parity -v
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p4_vbt_bridge -v
+```
+
+**验证结果**：
+- [x] 未设 `QUANT_ROOT` → 四路径回退工作树（`C:\Users\abulimity\orca\workspaces\quant\解释项目概念\...`）
+- [x] 设 `QUANT_ROOT=D:\project\quant` → 四路径均指向主检出（`D:\project\quant\data` / `\runs` / `\envs` / `\data\warehouse.duckdb`）
+- [x] `git_sha()` 返回正确 HEAD：`c64e890…-dirty`（`-dirty` 正确反映工作树未提交改动）
+- [x] 回归 `Ran 78 tests ... OK` + `Ran 11 tests ... OK`（后者直接消费 `base.PROJECT_ROOT`，改 canonical 后 vbt 子环境 cwd 指向主检出，测试更正确）
+- [x] 核心模块无残留 `parents[3]`；envs 脚本无残留裸 `parents[2]`（唯一 `parents[2]` 在 `paths.py` 自身）
+
+**关键点**：`base.PROJECT_ROOT` 保持可 import（`registry.py`、`tests/test_p4_vbt_bridge.py` 仍 `from quantlab.engines.base import PROJECT_ROOT`），
+仅语义变为 canonical；`git_sha`/`_is_dirty` 改用 `CHECKOUT_ROOT`（git 溯源必须跟随检出）；
+`env_lock_hash` 保持 `PROJECT_ROOT`（canonical 环境的锁）。`QUANT_ROOT` 未设置时行为与原先完全一致，零配置回退。
+
+---

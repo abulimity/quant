@@ -21,8 +21,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_CONFIG = PROJECT_ROOT / "config" / "llm.toml"
+from quantlab.paths import CONFIG_DIR
+
+DEFAULT_CONFIG = CONFIG_DIR / "llm.toml"
 
 KIND_CLOUD = "cloud"
 KIND_OLLAMA = "ollama"
