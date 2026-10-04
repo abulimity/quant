@@ -9,7 +9,8 @@
 ## 1. 一句话状态
 
 **P5 进行中：P5.1–P5.5 已完成且验证；P5.6 已用真实研报跑通「Parse→Extract→agent 生成代码→校验」，但产出代码有实质语义偏差，且口径决策仍悬。**
-（更新时间：2026-10-02；本会话全过程见 §7.7）
+**数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2024，199.3 万根 bar）并完成对账修复。**
+（更新时间：2026-10-04；P5 全过程见 §7.7，tushare 回填见 §7.8）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
 
 > ✅ **已解除**：`bt` 多标的换仓的 **3.6% 偏差** = **停牌顺延缺口**（bt 无「交易日掩码」，
@@ -56,7 +57,7 @@
 | D 盘剩余 | ≈ 275 GiB ✅ |
 | **管理员权限** | **无** —— 需要管理员的操作会失败，须记录为 `SKIPPED(no admin)` 并交人工 |
 | 长路径 | `LongPathsEnabled=0`，**已人工豁免**（`GateP0.long_paths=WAIVED`） |
-| 数据供应商 | **留空**，用合成夹具驱动全部验证 |
+| 数据供应商 | **cn_etf 已接 tushare**（境内 ETF 全量回填完成）；hk/us/fx 仍留空，其余用合成夹具 |
 | 网络 | 未验证数据接口可用性；**`raw.githubusercontent.com` 在本机不可达**（litellm 成本表拉取超时） |
 | **环境边界**（P1 定） | core（根）/ `envs/vbt` / `envs/x2`，**各自独立 `uv.lock`**；**backtrader 归 core**，未建 `envs/btrader` |
 | **打包**（P2 定） | 根项目改为 **`uv_build` 可编辑安装**（`[build-system]` + `module-root="src"`），故 `import quantlab` 可用；CLI 入口 `quantlab = quantlab.cli:main`。`uv.lock` 仅 1 行变化，**依赖零漂移** |
@@ -348,6 +349,42 @@
 `envs/x2/run_paper2spec.py`（Parse+Extract 独立驱动）、`_llm_probe.py`（通道探针）、
 `_diag_extract_l2.py`（根因诊断）、`run_x2_extra_tests.py`（`validate_code` + `operator_pitfall`）、
 `X2STRATEGY_PATCH.md`（补丁记录）、`X2_PAPER2CODE_REVIEW.md`（静态审阅）。
+
+---
+
+## 7.8 本会话：tushare 境内 ETF 全量回填 + 对账修复（2026-10-04）
+
+**目标**：按计划 §一–§六，接入 tushare 为真实数据源，全量回填境内 ETF 并做日历对账。
+
+### 结果
+
+| 阶段 | 状态 | 关键数字 |
+| --- | --- | --- |
+| 小样本验证（先行） | ✅ | 2 ETF × 2023 跑通 fetch→normalize→快照→DuckDB；242 根/只，XSHG 日历零缺失 |
+| 全量回填（第一轮） | ✅ | `tushare-02d1572bb0f220c7`；2861 标的 / 1,989,262 bar / 1,448 分红；69.9 min |
+| 对账 | ⚠️ 发现 1 缺陷 | 结构红旗全清，但 8 只窗口内 ETF 被静默跳过（瞬时空表） |
+| 修复 + 重跑 | ✅ | `tushare-704bee7c042ed05c`；1,992,886 bar（+3,624）；结构红旗仍全清 |
+
+### 关键结论
+
+1. **结构红旗全清**：0 非正价 / 0 区间违例 / 0 未来函数 / 0 主键重复 / 0 孤儿。
+2. **真实缺陷 1 处已修**：`fund_daily` 偶发返回空 DataFrame（非异常），`_call_with_retry`
+   只重试异常不重试空表 → 8 只被静默当无数据。新增 `_fetch_fund_daily()`（空表重试
+   2 次 / 0.5s），离线测试 `TestFetchFundDailyEmptyRetry` 固化。
+3. **对账「缺口」几乎全是口径**：674 只窗口后上市 + 138 只 list_date 缺失 + 82 只退市基金
+   + 45 只 list_date 偏晚（负缺口）——bars 正确，属 tushare 元数据缺陷。
+4. **留 P2.6**：`fund_basic.list_date` 的 45 偏晚 + 138 缺失，silver 层用
+   `bars_daily.min(ts)/max(ts)` 交叉校正 `listed_on/delisted_on`。
+
+### 新增/改动（已入库）
+
+`ingest/adapters/tushare.py`（`_fetch_fund_daily` 空表重试）、`tests/test_realdata.py`
+（`TestFetchFundDailyEmptyRetry`）、`docs/deploy/EVIDENCE.md`（回填+对账+修复证据）。
+
+### 待续（数据层）
+
+- 复权因子 `fund_adj` 未进契约快照（F.6 总收益待补）。
+- 宏观 / index 基准 / hk_basic / US / FX 仍走 futu/yfinance/宏观接口，属后续回填范围。
 
 ---
 
