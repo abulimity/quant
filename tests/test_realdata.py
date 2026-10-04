@@ -17,7 +17,7 @@ from datetime import date, datetime
 import pandas as pd
 
 from quantlab.fixtures.synth import FixtureBundle
-from quantlab.ingest.adapters.tushare import assign_symbol_ids
+from quantlab.ingest.adapters.tushare import TushareSource, assign_symbol_ids
 from quantlab.ingest.realdata import _derive_snapshot_id, check_real_invariants
 
 
@@ -129,6 +129,40 @@ class TestAssignSymbolIds(unittest.TestCase):
         ids = assign_symbol_ids(raw)
         self.assertEqual(ids, {"159919.SZ": 1, "510300.SH": 2})
         self.assertNotIn("508000.SH", ids)
+
+
+class _StubTushareSource(TushareSource):
+    """把 `_call_with_retry` 换成可编排 stub，隔离网络，测 `_fetch_fund_daily` 的空表重试。"""
+
+    def __init__(self, results):
+        super().__init__()
+        self._results = list(results)
+        self.calls = 0
+
+    def _call_with_retry(self, fn, code, **kwargs):
+        self.calls += 1
+        return self._results.pop(0)
+
+
+class TestFetchFundDailyEmptyRetry(unittest.TestCase):
+    def test_transient_empty_then_data_is_retried(self):
+        src = _StubTushareSource([pd.DataFrame(), pd.DataFrame({"x": [1]})])
+        out = src._fetch_fund_daily(lambda **k: None, "510300.SH", "20230101", "20231231")
+        self.assertEqual(src.calls, 2)
+        self.assertEqual(len(out), 1)
+
+    def test_persistent_empty_is_accepted_as_no_data(self):
+        src = _StubTushareSource([pd.DataFrame(), pd.DataFrame()])
+        out = src._fetch_fund_daily(lambda **k: None, "510300.SH", "20230101", "20231231")
+        self.assertEqual(src.calls, 2)
+        self.assertIsNotNone(out)
+        self.assertEqual(len(out), 0)
+
+    def test_nonempty_first_try_is_single_call(self):
+        src = _StubTushareSource([pd.DataFrame({"x": [1]})])
+        out = src._fetch_fund_daily(lambda **k: None, "510300.SH", "20230101", "20231231")
+        self.assertEqual(src.calls, 1)
+        self.assertEqual(len(out), 1)
 
 
 if __name__ == "__main__":

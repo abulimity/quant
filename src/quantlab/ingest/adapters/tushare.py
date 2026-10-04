@@ -73,6 +73,13 @@ _CN_ETF_LOT_SIZE = 100
 # 默认限速（秒/次）：5000 分限 500 次/分，取 ~300 次/分留重试余量
 _DEFAULT_RATE_LIMIT_DELAY = 0.2
 
+# fund_daily 空表重试：tushare 偶发对「窗口内应有数据」的标的返回**空表**（不抛异常），
+# 与「真无数据」（退市/窗口外上市）从单次结果无法区分。为避免静默丢标的，对空表做
+# 少量重试再接受，把「瞬时空表」与「真缺口」的边界后移，不掩盖真缺口（对账仍以
+# exchange-calendars 应取交易日为准，见 LOCAL_DEPLOYMENT_PLAN.md §六）。
+_FUND_DAILY_EMPTY_ATTEMPTS = 2
+_FUND_DAILY_EMPTY_DELAY = 0.5
+
 
 def assign_symbol_ids(raw_basic: pd.DataFrame) -> dict[str, int]:
     """由 fund_basic 名单分配**确定性**内部永久 ID。
@@ -205,6 +212,26 @@ class TushareSource:
             f"{NAME}: 标的 {code} 拉取失败（重试 {attempts} 次仍失败）: "
             f"{type(last_exc).__name__}: {last_exc}") from last_exc
 
+    def _fetch_fund_daily(self, fn, code: str, start: str, end: str):
+        """拉取单只 `fund_daily`：异常重试交给 `_call_with_retry`，空表另做少量重试。
+
+        实测 tushare 偶发对「窗口内应有数据」的标的返回**空 DataFrame**（不抛异常），
+        与「真无数据」（退市/窗口外上市）从单次结果无法区分。为避免静默丢标的，空表
+        最多重试 `_FUND_DAILY_EMPTY_ATTEMPTS` 次，仍空则接受为真无数据（不掩盖真缺口，
+        对账以 exchange-calendars 应取交易日为准）。
+        """
+        def call():
+            return fn(ts_code=code, start_date=start, end_date=end)
+
+        raw = None
+        for attempt in range(_FUND_DAILY_EMPTY_ATTEMPTS):
+            raw = self._call_with_retry(call, code=code)
+            if raw is not None and len(raw):
+                return raw
+            if attempt < _FUND_DAILY_EMPTY_ATTEMPTS - 1:
+                time.sleep(_FUND_DAILY_EMPTY_DELAY)
+        return raw
+
     def _fetch_per_symbol(self, pro, spec: FetchSpec, api: str, *, allow_empty: bool):
         if not spec.symbols:
             raise ContractError(f"{NAME}: {api} 需要指定标的（spec.symbols）")
@@ -216,8 +243,7 @@ class TushareSource:
         total = len(spec.symbols)
         for i, code in enumerate(spec.symbols, 1):
             if api == "fund_daily":
-                raw = self._call_with_retry(
-                    lambda: fn(ts_code=code, start_date=start, end_date=end), code=code)
+                raw = self._fetch_fund_daily(fn, code, start, end)
             else:  # fund_div：一次取全量，再裁剪到 [start, end]（与 bars 同窗口）
                 raw = self._call_with_retry(lambda: fn(ts_code=code), code=code)
                 if raw is not None and len(raw) and "ex_date" in raw.columns:

@@ -1863,3 +1863,59 @@ OK
 4. **限流**：当前 `rate_limit_delay=0.2s`（~300 次/分，留 500 分额度余量）；全量 2861 只 ETF 回填约 12–30 分钟，需幂等可重跑（已保证）。
 
 ---
+
+### 全量回填 + 对账 + 修复（2026-10-04）
+
+**全量回填结果**（`ingest --source tushare --start 2015-01-01 --end 2024-12-31`，2861 只非 REIT 境内 ETF）：
+
+```text
+snapshot_id: tushare-02d1572bb0f220c7   status: ok   exit: 0   耗时: 69.9 min
+row_counts: {'symbols': 2861, 'bars_daily': 1989262, 'corporate_actions': 1448}
+combined_content_hash: 6beb7b19bdb2d2c2be07c2b2729560bdcd65c97b118aa2d96be8a49e007b9d7b
+```
+
+**结构红旗（`check_real_invariants`）全清**：0 非正价格 / 0 OHLC 区间自洽违例 / 0 bars 主键重复 / 0 未来函数（`available_utc < ts`）/ 0 孤儿 symbol_id / 0 corporate_actions 主键重复。已入库的数据在结构上自洽。
+
+**对账（以 exchange-calendars XSHG 应取交易日为基准，逐标的比对 expected vs actual）**：发现 3 类偏差，全部定位到**元数据或适配器**，非 bars 本身错误：
+
+| 群体 | 数量 | 定性 |
+| --- | --- | --- |
+| `list_date` 缺失（NaT） | 138 | 近期上市、`fund_basic` 元数据未回填 `list_date`；对账按「2015 年起上市」误算 expected，实为窗口后上市 → 0 bar 正确 |
+| `list_date` > 2024-12-31 | 674 | 窗口后上市 → 0 bar 正确（名单是「现在」快照，含研究期末之后上市者） |
+| `list_date` 在窗口内、status=D | 82 | 其中 70 只 **2015 前已退市**（封闭/分级基金 `184xxx`/`500xxx`/`150xxx`）→ 0 bar 正确 |
+| `list_date` 在窗口内、status=L | 9 | **真缺口候选**（见下） |
+| 负缺口（actual > expected） | 45 | `fund_basic.list_date` **偏晚**（8 只 `20210101` 占位、其余散乱），bars 实际更早 → bars 正确、元数据错 |
+
+**发现并修复适配器缺陷（8 只静默缺失）**：
+
+9 只「窗口内上市、status=L、0 bar」逐只回查 `fund_daily`：8 只**重新拉取即返回 126–730 根**（`159552.SZ`/`159553.SZ`/`159577.SZ`/`159556.SZ`/`159555.SZ`/`159640.SZ`/`159613.SZ`/`159751.SZ`，均为 2021-12–2024-06 上市的中证2000增强/美国50/碳中和/信息安全/港股通科技 ETF）；仅 `161211.SZ`（联接基金）真无日线。
+
+根因：`fund_daily` 偶发对「应有数据」的标的返回**空 DataFrame（非异常）**，而 `_call_with_retry` 只重试异常、不重试空表 → 8 只被静默当「无数据」跳过。
+
+修复（`tushare.py`）：新增 `_fetch_fund_daily()`——异常仍走 `_call_with_retry`，空表另做 `_FUND_DAILY_EMPTY_ATTEMPTS=2` 次、`0.5s` 退避的重试后再接受；空表仍是合法结局（退市/窗口外上市），不掩盖真缺口。离线测试 `TestFetchFundDailyEmptyRetry`（3 例）固化。
+
+**回归**（`python -m unittest tests.test_realdata tests.test_tushare`）：
+
+```text
+Ran 34 tests in 3.563s
+OK
+```
+
+**结论与后续**：已入库 bars 结构自洽；真实缺失 = 8 只瞬时空表（已修复）。修复后需**重跑全量回填**产出修正快照（幂等、新 `snapshot_id`），`fund_basic.list_date` 的 45 处偏晚 + 138 处缺失属 tushare 侧元数据缺陷，回填后在 silver 层用 `bars_daily.min(ts)/max(ts)` 交叉校正 `listed_on/delisted_on`（P2.6 质量规则阶段）。
+
+**修正回填复核（同刻，空表重试已生效）**：
+
+```text
+snapshot_id: tushare-704bee7c042ed05c   status: ok   exit: 0
+row_counts: {'symbols': 2861, 'bars_daily': 1992886, 'corporate_actions': 1448}
+bars_daily 较上轮 +3624（即 8 只补回）
+```
+
+- 8 只缺失标的全部补齐：`159552.SZ`(126) / `159553.SZ`(175) / `159555.SZ`(256) / `159556.SZ`(236) / `159577.SZ`(210) / `159613.SZ`(709) / `159640.SZ`(595) / `159751.SZ`(730)，各覆盖 `listed_on`→2024-12-31，与上轮逐只回查行数一致。
+- `161211.SZ`（联接基金）仍 0 根 —— 真无日线，正确。
+- 零 bar 标的数 903 → **895**（即仅补回 8 只，其余 895 为窗口后上市/退市/元数据缺失，属预期）。
+- 结构红旗复核仍全清：0 非正价 / 0 区间违例 / 0 未来函数 / 0 主键重复。
+
+本轮「对账 → 定位 → 修复 → 重跑 → 复核」闭环完成；`tushare-704bee7c042ed05c` 为当前修正快照，`tushare-02d1572bb0f220c7`（旧）保留但已被更正结果取代。
+
+---
