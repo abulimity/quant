@@ -2124,7 +2124,7 @@ $env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m unittest tests.test
   缺 entry 直接抛 `DslParseError`（防「静默全现金」）；`DSL_SCHEMA` 作为 system prompt 单一真相。
 - `tests/test_p5_dsl.py`（**新增**）—— 20 项确定性测试，钉住三 V3。
 - `src/quantlab/x2/paper2spec.py`（**改**）—— `OP_ALIASES` 加 `cross_above/below`；新增
-  `_BINARY_OPS`：扁平映射器遇到二元/事件算子 **fail-closed 拒绝**（引导走 DSL 路径）；
+  `_MULTI_CHILD_OPS`（P5.6a 时为 `_BINARY_OPS`）：扁平映射器遇到二元/事件算子 **fail-closed 拒绝**（引导走 DSL 路径）；
   `map_to_contract` 现在解析 `exit`（原先 `exit=None` 硬编码）；新增 `extract_dsl()`。
 - `envs/x2/entry.py`（**改**）—— 新增 `paper2dsl` 算子：`DSL_SCHEMA` 作 system、论文全文作
   user，`litellm.completion(temperature=0.0)`；`_parse_json_content` 去 ```json 围栏、JSON 失败即报错；
@@ -2367,3 +2367,57 @@ bt 偏差只在 `halt_sessions==0` 时才要求 ≤1e-4，否则断言 `halt_ses
 
 - `report.py` 生成 PNG/tearsheet 时 matplotlib 缺 CJK 字体（DejaVu Sans）→ 图内中文标签显示方框；
   `report.md` 文本不受影响。如需中文渲染，后续为 matplotlib 配中文字体（如 SimHei/微软雅黑）。
+
+---
+
+## P14 · 横截面算子族（rank / cross_sectional_rank / condition）（2026-10-05）
+
+**目的**：把横截面排名从 `emit_weights` 硬编码的 63 日动量，升级为一等 `Expr` 算子
+（`rank`/`cross_sectional_rank`/`condition`）+ `StrategySpec.ranking`，使「63 日动量轮动，
+买前 3 等权」成为合规、可过闸门、可正确选股的规格。
+
+**改动文件**：
+- `src/quantlab/contract/types.py` —— `StrategySpec.ranking: Expr | None = None`；`to_dict`/`from_dict`/`validate_spec` 同步。
+- `src/quantlab/contract/emit.py` —— `_SUPPORTED_OPS` 加三算子；`evaluate` 加两分支；`emit_weights` 排名路径（`ranking=None` 回退硬编码动量）。
+- `src/quantlab/contract/lint.py` —— G4/G5/G6 遍历从 `(entry, exit)` 扩到 `(entry, exit, ranking)`。
+- `src/quantlab/x2/dsl.py` —— 白名单 `DSL_CROSS_SECTIONAL_OPS`/`DSL_TERNARY_OPS`；`parse_dsl_node` 三算子；`DSL_SCHEMA` 三形态 + ascending 方向规则。
+- `src/quantlab/x2/paper2spec.py` —— `OP_ALIASES` 收三算子；`_BINARY_OPS` → `_MULTI_CHILD_OPS`（fail-closed 拒绝多子结构，引导走 DSL）。
+- `tests/test_p14_cross_sectional.py`（**新增**）—— 33 项确定性测试，本地合成面板。
+
+**执行与输出**：
+
+```powershell
+# 环境：主检出 venv + 工作树 src
+$env:PYTHONIOENCODING='utf-8'; $env:QUANT_ROOT='D:\project\quant'
+$env:PYTHONPATH='<worktree>\src'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p14_cross_sectional -v
+# → Ran 33 tests in 0.474s — OK
+```
+
+```powershell
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p5_dsl tests.test_p5_spec2weights tests.test_p3_contract tests.test_p5_ma_cross_e2e tests.test_p5_paper2spec
+# → Ran 124 tests in 22.953s — OK
+```
+
+```powershell
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest discover -t . -s tests
+# → Ran 447 tests in 231.743s — OK
+```
+
+**验证中发现并修复的真实缺陷（升/降序反相）**：
+初版 `sample-momentum` 用 `cross_sectional_rank(momentum, ascending=False)` 作 `ranking`，
+而 `ranking` 字段口径是「越高越优」、`emit_weights` 用 `-scores[s]` 降序 —— `ascending=False`
+给「rank 1 = 最大动量」（即最低分数），降序排序于是选出了**动量最差**的 3 只。两个选择类测试
+（`test_cross_sectional_rank_selects_same_top_n_as_raw_score`、`test_weights_select_top3_by_shifted_momentum`）
+当场 FAIL 抓住此缺陷。修正：`ranking` 用法统一 `ascending=True`（rank 值随因子递增），并在
+`DSL_SCHEMA` 补「越高越优取 ascending 方向」规则。**parity 测试（手写未 shift 动量 == 兜底）始终绿，**
+证明「越高越优」契约本身无误，问题仅在 rank 的升/降方向。
+
+- [x] evaluate：rank 降/升/默认/NaN 保留/非布尔 ascending 拒绝/空参拒绝；condition 三元 where/分支可为表达式/arity 错拒绝
+- [x] spec：ranking JSON 往返（bool ascending 保留）/默认 None/validate_spec 拒非 Expr
+- [x] lint：未 shift ranking field → G4；shift 后过；condition 未 shift 叶子 → G4；ranking 窗口计入 G5；窗口非法 → G6；ranking=None 向后兼容
+- [x] 发射：ranking（手写未 shift 动量）== 兜底 parity；rank 单调 → 同 top-3；权重行和≤1、≤top_n；未来扰动不动过去权重
+- [x] E2E：`sample-momentum` 过全闸门；entry=const(1.0) 预热后恒 +1；选出恰为 shift 语义动量 `px.shift(1)/px.shift(64)-1` 前三
+- [x] DSL：三算子 parse；ascending 非 bool/arity 错 → `DslParseError`；DSL 带 ranking → 自动 shift 的 `cross_sectional_rank(momentum(shift(close,1),63), True)` 且过闸门；白名单 `_SUPPORTED_OPS` ↔ `DSL_ALL_OPS` 同步
+
+---

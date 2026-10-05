@@ -8,7 +8,7 @@
 
 ## 1. 一句话状态
 
-**P5.6 全链路六段 + P6 组合与报告 已完成且验证：一条命令「夹具数据 + golden DSL → 三引擎（vbt 粗筛→backtrader 精验→bt 组合）→ reference 对账 → 组合 → 报告」跑通并落 `runs/<run_id>/`，可复现（V4 两次同输入指标一致）；P6 三缺块（portfolio/eval/registry + `quantlab run` CLI）补齐，458 测试全绿。**主线（P5.6/P6 + #14）已全部落地**：#14 横截面算子族由其他 agent 实现并合并进 main（PR #4/#5，见 §7.12）；§7.2 仅剩非阻塞待办（长路径管理员 / 数据供应商配置 / P7 等）。**
+**P5.6 全链路六段 + P6 组合与报告 已完成且验证：一条命令「夹具数据 + golden DSL → 三引擎（vbt 粗筛→backtrader 精验→bt 组合）→ reference 对账 → 组合 → 报告」跑通并落 `runs/<run_id>/`，可复现（V4 两次同输入指标一致）；P6 三缺块（portfolio/eval/registry + `quantlab run` CLI）补齐，458 测试全绿。主线（P5.6/P6 + #14）已全部落地：#14 横截面算子族（`rank`/`cross_sectional_rank`/`condition` + `StrategySpec.ranking`，33 测试全绿）由其他 agent 实现并合并进 main（PR #4/#5，见 §7.13）；§7.2 仅剩非阻塞待办（长路径管理员 / 数据供应商配置 / P7 等）。**
 **数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2026-09-30，272.4 万根 bar）并完成对账修复；剩余数据集（复权因子 `fund_adj`、基准指数 `index`、港股名单 `hk_basic`、宏观最小集）已接入并全部回填，时间范围扩展到最新交易日 2026-09-30（最新快照 `tushare-f4f7c81a15b5779c`）；数据并入主项目 `D:\project\quant\data`。**
 （更新时间：2026-10-05；P5 全过程见 §7.7，口径重估见 §7.6，tushare 回填见 §7.8，剩余数据集见 §7.9，能力域内 E2E 落地见 §7.10，全链路六段 + P6 落地见 §7.12）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
@@ -197,7 +197,7 @@
 | 5 | `envs/vbt` 的 `plotly<7` 上界（现 6.9.0） | 已人工裁决 | 待 vectorbt 上游适配 plotly 7 |
 | 6 | `litellm` 无 `__version__` | — | P5 起改 `importlib.metadata.version("litellm")` |
 | 7 | 手工跑 uv 前须清 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV` | 会把环境建到错误位置 | 例行注意（`bridge.py` 已自动清洗） |
-| 14 | **横截面算子族**（`rank`/`cross_sectional_rank`/`condition`）未进契约 | P5.6 实测：真实 paper2spec 的横截面动量规格**映射不出 entry**（横截面排名目前只在 `emit_weights` 里**隐式**实现）。经人工裁定（2026-10-02）：**另立任务**，不在 P5.6 内顺带做 | ✅ 已由其他 agent 实现并合并（PR #4/#5：`4b1fd12` feat + `e5bdf8d` docs；测试 `test_p14_cross_sectional.py`） |
+| 14 | **横截面算子族**（`rank`/`cross_sectional_rank`/`condition`） | ✅ **已落地**（2026-10-05，PR #4/#5）：三算子进 `Expr` 一等求值 + `StrategySpec.ranking` 取代 `emit_weights` 硬编码动量，33 测试全绿（测试 `test_p14_cross_sectional.py`） | 见 §7.13 |
 | 15 | **x2strategy `max_tokens` 补丁在 `.venv` 内** | 重建环境（`uv sync`/重装）即丢 → Extract Layer-2 会再次崩溃 | 重建后按 `envs/x2/X2STRATEGY_PATCH.md` 复现 |
 | 16 | **`strategy.py` 静态审阅出 H1–H6 语义偏差**（HRP 退化等权、风险袖套不缩放、横截面 rank 未用、跳空延迟全局生效…） | 若要真跑此代码，须先修，否则结果无解释力 | 待定，见 §7.7 与 `envs/x2/X2_PAPER2CODE_REVIEW.md` |
 | 17 | `config/llm.toml` 模型名与中转实际提供的不符 | 已改 `claude-sonnet-4-5` → `deepseek-v4-pro` | ✅ 本会话已修 |
@@ -497,7 +497,7 @@ E2E-B（论文 → spec 的 LLM 提取层，用户拍板「受控 DSL + fail-clo
 
 - **全链路六段**（P5.6 的 V2/V4）：论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 →
   bt 组合 → 报告，全程无人工改文件 —— **尚未串起来**（本次只到 paper→spec→weights 对拍）。
-- ~~**横截面算子族 #14**（`rank`/`cross_sectional_rank`/`condition`）——真实研报属此域，单独立项。~~ → ✅ 已由其他 agent 实现并合并（PR #4/#5）。
+- **横截面算子族 #14**（`rank`/`cross_sectional_rank`/`condition`）——真实研报属此域，~~单独立项~~ **已落地**（2026-10-05，其他 agent 合并 PR #4/#5，见 §7.13）。
 
 ---
 
@@ -565,6 +565,49 @@ bt 无法表达逐标的停牌顺延（`halt_deferral_unsupported`，E2E-A 早�
 
 - ✅ #14 横截面算子族已由其他 agent 实现并合并（PR #4/#5，测试 `test_p14_cross_sectional.py`）。
 - 报告 PNG/tearsheet 缺 CJK 字体（DejaVu Sans 无中文），图内中文标签显示方框；`report.md` 不受影响。
+
+---
+
+## 7.13 横截面算子族 #14 落地（2026-10-05）
+
+**一句话**：把横截面排名从 `emit_weights` 里**硬编码**的 63 日动量，升级为一等 `Expr` 算子
+（`rank` / `cross_sectional_rank` / `condition`）+ spec 驱动的 `StrategySpec.ranking`，使
+「63 日动量轮动，买前 3 等权」可表达为一个合规 `StrategySpec`，过全闸门并产出正确权重。
+
+### 三个新算子（`contract.emit.evaluate` 一等求值）
+
+| 算子 | 签名 | 语义 |
+| --- | --- | --- |
+| `rank` / `cross_sectional_rank` | `(child, ascending=False)` | 横截面排名；`ascending=False` ⇒ rank 1 = 最大值（pandas `rank(axis=1, method='average', na_option='keep')`）。两名为同一原语的正式名；`ascending` 必须严格布尔（防 `bool("false")` 坑） |
+| `condition` | `(pred, a, b)` | 三元 `np.where`（pred 先 bool 化，NaN 视为 False）；arity=3 |
+
+### `StrategySpec.ranking: Expr | None = None`（数值分数，**越高越优**）
+
+- `emit_weights`：`ranking` 非 None 时 `score = evaluate(ranking, prices)`、降序排序取 `top_n`
+  （分数相同时按 symbol_id 稳定排序）；`ranking is None` 回退到**原硬编码动量**（向后兼容，
+  既有测试保持绿）。
+- **升/降序口径（关键）**：`ranking` 是「越高越优」，`emit_weights` 用 `-scores[s]` 降序。
+  故对「越大越好」的因子（如动量），`cross_sectional_rank` 应取 **`ascending=True`**（rank 值
+  随因子递增）；`ascending=False` 会反相选股。默认 `False` 是算子的 pandas 原义（rank 1=最大），
+  用于「越小越好」的因子。
+- 因果性：`ranking` 的 field 叶子**同样**受 G4（shift ≥ 1）约束；G5（lookback 覆盖最大窗口）与
+  G6（窗口正整数）统一扫 `ranking`。
+
+### lint / DSL / paper2spec 同步
+
+- `lint.py`：G4/G5/G6 的遍历从 `(entry, exit)` 扩到 `(entry, exit, ranking)`。
+- `dsl.py`：新增 `DSL_CROSS_SECTIONAL_OPS` / `DSL_TERNARY_OPS` 并入白名单；`parse_dsl_node`
+  支持三算子；`DSL_SCHEMA` 增三形态 + 「ranking 越高越优，取 ascending 方向」规则。
+- `paper2spec.py`：`OP_ALIASES` 受控收三算子；`_build` 对 `_MULTI_CHILD_OPS`
+  （原 `_BINARY_OPS` + rank/condition）fail-closed 拒绝并引导走受控 DSL（不猜多子结构）。
+- 白名单同步测试（`_SUPPORTED_OPS` ↔ `DSL_ALL_OPS`）保持 1:1。
+
+### 验证
+
+- 新增 `tests/test_p14_cross_sectional.py`（33 测试，本地合成面板）：evaluate 语义 / spec 往返 /
+  lint 三规则 / 发射 parity（手写未 shift 动量 == 兜底）/ top-3 选择 / 未来扰动 / DSL parse / 白名单同步。
+- 全量 `unittest discover` 绿（含 `test_p3_contract`、`test_p5_spec2weights`、`test_p5_dsl`、
+  `test_p5_paper2spec`、`test_p5_ma_cross_e2e`）。证据见 EVIDENCE.md §P14。
 
 ---
 

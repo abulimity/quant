@@ -166,7 +166,7 @@ def _rule_no_lookahead(spec: StrategySpec, report: LintReport) -> None:
     依据 F.4：信号在周一 09:00（北京时间）产生时，内地与香港**当日尚未收盘**，
     因此「读到当日 close」在结构上就是未来函数。
     """
-    for label, expr in (("entry", spec.entry), ("exit", spec.exit)):
+    for label, expr in (("entry", spec.entry), ("exit", spec.exit), ("ranking", spec.ranking)):
         if expr is None:
             continue
         report.findings.extend(_scan_lookahead(expr, label))
@@ -215,7 +215,7 @@ def _max_window(expr: Expr | None) -> int:
 
 
 def _rule_lookback_sufficient(spec: StrategySpec, report: LintReport) -> None:
-    needed = max(_max_window(spec.entry), _max_window(spec.exit))
+    needed = max(_max_window(spec.entry), _max_window(spec.exit), _max_window(spec.ranking))
     if spec.lookback < needed:
         report.findings.append(LintFinding(
             "G5.lookback_sufficient", "error",
@@ -225,7 +225,7 @@ def _rule_lookback_sufficient(spec: StrategySpec, report: LintReport) -> None:
 
 
 def _rule_windows_positive_int(spec: StrategySpec, report: LintReport) -> None:
-    for label, expr in (("entry", spec.entry), ("exit", spec.exit)):
+    for label, expr in (("entry", spec.entry), ("exit", spec.exit), ("ranking", spec.ranking)):
         if expr is None:
             continue
         for node in expr.walk():

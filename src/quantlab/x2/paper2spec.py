@@ -46,15 +46,18 @@ OP_ALIASES: dict[str, str] = {
     "momentum": "momentum", "roc": "momentum",
     "shift": "shift", "lag": "lag", "delay": "lag",
     "cross_above": "cross_above", "cross_below": "cross_below",
+    "rank": "rank", "cross_sectional_rank": "cross_sectional_rank", "condition": "condition",
 }
 
 # 需要「价格字段 + 窗口」两个参数的算子：我们会自动补 shift(1)（§P3.2 G4）
 _WINDOW_OPS = frozenset({"sma", "ema", "std", "momentum"})
 
-# 二元/事件算子：本映射器（扁平 `{name, field, params}`）**无法**正确构造出
-# 两个子表达式，故收进别名表但 `_build` 里 fail-closed 拒绝 —— 引导走 DSL 路径
-# （`quantlab.x2.dsl`），而不是伪造一棵「看着像合规」的单参树。
-_BINARY_OPS = frozenset({"cross_above", "cross_below"})
+# 多子节点算子（二元/事件/横截面/三元）：本映射器（扁平 `{name, field, params}`）
+# **无法**正确构造出多个子表达式，故收进别名表但 `_build` 里 fail-closed 拒绝 ——
+# 引导走 DSL 路径（`quantlab.x2.dsl`），而不是伪造一棵「看着像合规」的单参树。
+_MULTI_CHILD_OPS = frozenset({
+    "cross_above", "cross_below", "rank", "cross_sectional_rank", "condition",
+})
 
 
 @dataclass
@@ -190,11 +193,11 @@ def _build(op_name: str, node: dict, unmapped: list[str]) -> tuple[Expr | None, 
         unmapped.append(f"未映射的算子 {op_name!r}")
         return None, unmapped
 
-    if mapped in _BINARY_OPS:
+    if mapped in _MULTI_CHILD_OPS:
         unmapped.append(
-            f"算子 {op_name!r} 是二元/事件算子（cross_above/cross_below），"
-            f"本映射器无法从扁平描述构造两个子表达式 —— 请走受控 DSL 路径"
-            f"（quantlab.x2.dsl）。")
+            f"算子 {op_name!r} 是多子节点算子（cross_above/cross_below/rank/"
+            f"cross_sectional_rank/condition），本映射器无法从扁平描述构造多个子表达式 "
+            f"—— 请走受控 DSL 路径（quantlab.x2.dsl）。")
         return None, unmapped
 
     raw = node.get("params") or node.get("parameters") or node.get("args") or []

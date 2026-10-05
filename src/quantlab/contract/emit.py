@@ -76,7 +76,8 @@ class MarketData:
 # --------------------------------------------------------------------------- #
 _SUPPORTED_OPS = (
     "field/const/shift/lag/sma/rolling_mean/std/ema/momentum/"
-    "gt/lt/ge/le/eq/cross_above/cross_below/and_/or_/not_"
+    "gt/lt/ge/le/eq/cross_above/cross_below/and_/or_/not_/"
+    "rank/cross_sectional_rank/condition"
 )
 
 
@@ -151,6 +152,25 @@ def evaluate(expr: Expr, prices: pd.DataFrame) -> pd.DataFrame:
     if op == "not_":
         return ~evaluate(args[0], prices).fillna(False).astype(bool)
 
+    if op in ("rank", "cross_sectional_rank"):
+        if not args:
+            raise ContractViolation(f"{op} 需要 (序列, [ascending]) 参数")
+        child = _as_frame(args[0], prices)
+        # ascending 直接从 args 读布尔值，绝不走 _as_frame（否则 float(True)→1.0）
+        ascending = args[1] if len(args) > 1 else False
+        if not isinstance(ascending, bool):
+            raise ContractViolation(f"{op} 的 ascending 必须是布尔值，得到 {ascending!r}")
+        return child.rank(axis=1, method="average", ascending=ascending, na_option="keep")
+
+    if op == "condition":
+        if len(args) != 3:
+            raise ContractViolation(f"condition 需要 (pred, a, b) 三个参数，得到 {len(args)}")
+        pred = _as_frame(args[0], prices).fillna(False).astype(bool)
+        a = _as_frame(args[1], prices)
+        b = _as_frame(args[2], prices)
+        return pd.DataFrame(np.where(pred.to_numpy(), a.to_numpy(), b.to_numpy()),
+                            index=prices.index, columns=prices.columns)
+
     raise ContractViolation(f"未知算子 {op!r}。已支持：{_SUPPORTED_OPS}")
 
 
@@ -221,9 +241,20 @@ def emit_weights(
     tradable = data.tradable()[prices.columns]
 
     rebalance_dates = _rebalance_dates(prices.index, spec.sizing.rebalance)
-    momentum = prices / prices.shift(momentum_window) - 1.0
-    warmed = momentum.notna()
-    fresh = _fresh_mask(prices, max(momentum_window, 5), tradable)
+
+    if spec.ranking is not None:
+        # 排名分数由 spec 驱动（横截面算子族 #14）。分数是 close-time 计算（调仓在收盘
+        # 决策、T+1 开盘成交），故 `momentum` 等窗口因子无需 shift —— 与下方动量兜底
+        # 同一口径。`_max_window` 沿用 lint 的窗口口径做预热。
+        from quantlab.contract.lint import _max_window
+        score = evaluate(spec.ranking, prices)
+        warmup = max(_max_window(spec.ranking), int(spec.lookback), 5)
+    else:
+        # 向后兼容兜底：硬编码 63 日动量（F.8），ranking=None 时仍走此路径。
+        score = prices / prices.shift(momentum_window) - 1.0
+        warmup = max(momentum_window, 5)
+    warmed = score.notna()
+    fresh = _fresh_mask(prices, warmup, tradable)
 
     # **信号是事件，持仓是状态**（F.4.5：挂单在新信号出现时取消并重算）。
     # 若直接要求「调仓日当天恰好发出 +1」，周中出现的金叉会被整条丢掉 ——
@@ -243,7 +274,7 @@ def emit_weights(
         if not eligible:
             continue                       # 无合格标的 → 持有现金（该行全 0）
 
-        scores = momentum.loc[date, eligible]
+        scores = score.loc[date, eligible]
         if bool(np.isfinite(scores.to_numpy(dtype="float64")).all()):
             # 分数相同时按**内部 ID 稳定排序**（F.8 明文要求）
             ordered = sorted(eligible, key=lambda s: (-float(scores[s]), int(s)))
