@@ -2558,7 +2558,7 @@ git add -A
 git commit -m "feat(dsl): 补算子地基——算术/数学 + 专用窗口算子（阶段1）
 
 Co-Authored-By: Claude Code <noreply@anthropic.com>"
-# → [主线-数据流统一-sources接线-3 <sha>] 5 files changed, …
+# → [主线-数据流统一-sources接线-3 addaf2f] 6 files changed, 653 insertions(+), 18 deletions(-)
 ```
 
 **结果**：提交至分支 `主线-数据流统一-sources接线-3`，**未推送**（按任务要求）。
