@@ -20,6 +20,7 @@ _EXPORTS = {
     "annualized_return": "quantlab.eval.metrics",
     "annualized_volatility": "quantlab.eval.metrics",
     "sharpe_ratio": "quantlab.eval.metrics",
+    "calmar_ratio": "quantlab.eval.metrics",
     "turnover": "quantlab.eval.metrics",
     "rebalance_count": "quantlab.eval.metrics",
     "performance_metrics": "quantlab.eval.metrics",
