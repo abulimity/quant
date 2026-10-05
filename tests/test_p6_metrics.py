@@ -23,6 +23,7 @@ import pandas as pd
 from quantlab.eval.metrics import (
     annualized_return,
     annualized_volatility,
+    calmar_ratio,
     derive_periods_per_year,
     max_drawdown,
     performance_metrics,
@@ -142,6 +143,35 @@ class TestPerformanceMetrics(unittest.TestCase):
         self.assertIn("n_rebalances", metrics)
         self.assertEqual(metrics["risk_free_rate"], 0.0)
         self.assertTrue(metrics["annualization_note"], "口径声明不得为空")
+
+
+class TestCalmarRatio(unittest.TestCase):
+    """Calmar 比率 = 年化收益 / |最大回撤|（研报核心指标）。"""
+
+    def test_normal_positive_value(self) -> None:
+        # 净值先涨后跌再涨：带符号回撤 = 0.9/1.2 - 1 = -0.25 → |回撤| = 0.25
+        equity = pd.Series([1.0, 1.1, 1.2, 0.9, 1.1, 1.3])
+        ppy = 4.0
+        expected_ann = 1.3 ** (1.0 / (len(equity) / ppy)) - 1.0   # 年化收益 = 1.3^(1/1.5) − 1
+        expected = expected_ann / 0.25
+        value = calmar_ratio(equity, periods_per_year=ppy)
+        self.assertIsNotNone(value)
+        self.assertAlmostEqual(value, expected)
+        self.assertGreater(value, 0.0)
+
+    def test_zero_drawdown_returns_none(self) -> None:
+        # 净值单调上涨 → max_drawdown = 0 → 分母为 0，比率无定义返回 None
+        equity = pd.Series([1.0, 1.1, 1.2, 1.3])
+        self.assertIsNone(calmar_ratio(equity, periods_per_year=4.0))
+
+    def test_metric_name_present_in_performance_metrics(self) -> None:
+        idx = pd.bdate_range("2020-01-02", periods=120)
+        rng = np.random.default_rng(2)
+        equity = pd.Series(np.cumprod(1.0 + rng.normal(0.0004, 0.01, 120)), index=idx)
+        metrics = performance_metrics(equity)
+        self.assertIn("calmar_ratio", metrics)
+        # 与独立函数一致，钉住 performance_metrics 的接线
+        self.assertEqual(metrics["calmar_ratio"], calmar_ratio(equity))
 
 
 if __name__ == "__main__":

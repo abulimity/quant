@@ -2497,6 +2497,46 @@ gh pr create --base main --head 主线-数据流统一-sources接线 --title "fe
 
 ---
 
+## 回测报告补 Calmar 比率（研报核心指标）（2026-10-05）
+
+**目标**：`performance_metrics` 增加 `calmar_ratio = annualized_return / |max_drawdown|`；
+报告行加 Calmar 一行；补测试并全量回归绿。仅改代码与测试，不碰数据、不碰算子。
+
+### 改动（工作树改，commit 回分支）
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/quantlab/eval/metrics.py` | 新增 `calmar_ratio()`：`annualized_return / abs(max_drawdown)`；`max_drawdown=0` 或年化收益非有限时返回 `None`（口径写入模块 docstring）。`performance_metrics` 空分支与主分支均补 `calmar_ratio` 键。 |
+| `src/quantlab/eval/__init__.py` | `_EXPORTS` 登记 `calmar_ratio`，与其它指标函数一致。 |
+| `src/quantlab/eval/report.py` | `_METRIC_ROWS` 在 `max_drawdown` 之后加 `("calmar_ratio", "Calmar 比率（年化收益 / |最大回撤|）")`。 |
+| `tests/test_p6_metrics.py` | 新增 `TestCalmarRatio`：正常正值（手算对拍）、`max_drawdown=0` 返回 `None`、`performance_metrics` 含指标名且与独立函数一致。 |
+
+### 验证命令与输出（主检出环境 + 数据，PYTHONPATH 指工作树 src）
+
+```bash
+# 前置：$env:PYTHONIOENCODING='utf-8'；QUANT_ROOT=D:\project\quant（数据/runs 指向主检出）
+#       PYTHONPATH=<worktree>/src；清 UV_PROJECT_ENVIRONMENT / VIRTUAL_ENV
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p6_metrics -v
+# → Ran 17 tests in 0.041s — OK（含新增 3 条 Calmar）
+
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p6_report -v
+# → Ran 5 tests in 1.658s — OK
+
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest discover -s tests -t .
+# → Ran 511 tests in 234.965s — OK（退出码 0；较上一基线 508 增 3）
+```
+
+**口径**：`calmar_ratio = annualized_return / |max_drawdown|`，回撤取绝对值（`max_drawdown`
+带符号 ≤0）；`max_drawdown=0`（净值单调不跌）时分母为 0、比率无定义，返回 `None`
+（报告层 `_fmt` 渲染为「N/A」）。年化收益与回撤共用同一 `periods_per_year` 口径。
+
+**备注**：首次全量 `discover` 未设 `QUANT_ROOT` 时，夹具快照读到工作树 `data/` 报
+`FileNotFoundError`（20 errors）；设 `QUANT_ROOT=D:\project\quant` 后全绿 —— 与 CLAUDE.md
+「工作树不落数据」纪律一致，非本次改动引入。matplotlib 中文字形缺 glyph 的 UserWarning
+为既有现象（DejaVu Sans 无 CJK），不影响断言。
+
+---
+
 ## P15 · 算子地基（算术/数学 + 专用窗口）——「多资产 ETF 轮动」阶段 1
 
 - 执行日期：2026-10-05

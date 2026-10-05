@@ -36,6 +36,7 @@ _METRIC_ROWS = (
     ("annualized_volatility", "年化波动率"),
     ("sharpe_ratio", "Sharpe"),
     ("max_drawdown", "最大回撤（带符号，≤0）"),
+    ("calmar_ratio", "Calmar 比率（年化收益 / |最大回撤|）"),
     ("turnover", "换手 Σ|Δw|"),
     ("n_rebalances", "换手次数"),
 )
