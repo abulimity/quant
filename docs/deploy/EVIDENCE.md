@@ -2497,6 +2497,114 @@ gh pr create --base main --head 主线-数据流统一-sources接线 --title "fe
 
 ---
 
+## 回测报告补 Calmar 比率（研报核心指标）（2026-10-05）
+
+**目标**：`performance_metrics` 增加 `calmar_ratio = annualized_return / |max_drawdown|`；
+报告行加 Calmar 一行；补测试并全量回归绿。仅改代码与测试，不碰数据、不碰算子。
+
+### 改动（工作树改，commit 回分支）
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/quantlab/eval/metrics.py` | 新增 `calmar_ratio()`：`annualized_return / abs(max_drawdown)`；`max_drawdown=0` 或年化收益非有限时返回 `None`（口径写入模块 docstring）。`performance_metrics` 空分支与主分支均补 `calmar_ratio` 键。 |
+| `src/quantlab/eval/__init__.py` | `_EXPORTS` 登记 `calmar_ratio`，与其它指标函数一致。 |
+| `src/quantlab/eval/report.py` | `_METRIC_ROWS` 在 `max_drawdown` 之后加 `("calmar_ratio", "Calmar 比率（年化收益 / |最大回撤|）")`。 |
+| `tests/test_p6_metrics.py` | 新增 `TestCalmarRatio`：正常正值（手算对拍）、`max_drawdown=0` 返回 `None`、`performance_metrics` 含指标名且与独立函数一致。 |
+
+### 验证命令与输出（主检出环境 + 数据，PYTHONPATH 指工作树 src）
+
+```bash
+# 前置：$env:PYTHONIOENCODING='utf-8'；QUANT_ROOT=D:\project\quant（数据/runs 指向主检出）
+#       PYTHONPATH=<worktree>/src；清 UV_PROJECT_ENVIRONMENT / VIRTUAL_ENV
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p6_metrics -v
+# → Ran 17 tests in 0.041s — OK（含新增 3 条 Calmar）
+
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p6_report -v
+# → Ran 5 tests in 1.658s — OK
+
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest discover -s tests -t .
+# → Ran 511 tests in 234.965s — OK（退出码 0；较上一基线 508 增 3）
+```
+
+**口径**：`calmar_ratio = annualized_return / |max_drawdown|`，回撤取绝对值（`max_drawdown`
+带符号 ≤0）；`max_drawdown=0`（净值单调不跌）时分母为 0、比率无定义，返回 `None`
+（报告层 `_fmt` 渲染为「N/A」）。年化收益与回撤共用同一 `periods_per_year` 口径。
+
+**备注**：首次全量 `discover` 未设 `QUANT_ROOT` 时，夹具快照读到工作树 `data/` 报
+`FileNotFoundError`（20 errors）；设 `QUANT_ROOT=D:\project\quant` 后全绿 —— 与 CLAUDE.md
+「工作树不落数据」纪律一致，非本次改动引入。matplotlib 中文字形缺 glyph 的 UserWarning
+为既有现象（DejaVu Sans 无 CJK），不影响断言。
+
+---
+
+## P15 · 算子地基（算术/数学 + 专用窗口）——「多资产 ETF 轮动」阶段 1
+
+- 执行日期：2026-10-05
+- 执行环境：Windows 11，PowerShell，orca 工作树 `主线-数据流统一-sources接线-3`
+- 执行者：AI agent
+- 范围：只补策略表达式 DSL 的一等算子（阶段 1），**不碰数据契约/组合/指标，不做任何数据 ingest**
+
+### 变更文件
+
+| 文件 | 变更 |
+| --- | --- |
+| `src/quantlab/contract/emit.py` | `_SUPPORTED_OPS` 扩至 **34** 个：+`add/sub/mul/div/neg/log/exp`（逐元素）、+`linreg_slope/linreg_r2/llt/zscore/ewm_std`（因果窗口）；新增 `_rolling_ols`/`_llt` 等 helper |
+| `src/quantlab/x2/dsl.py` | `DSL_ARITHMETIC_OPS`/`DSL_MATH_OPS` 白名单；`_parse_window` 三口径（整数 window / alpha ∈ (0,1) / span ≥ 1）；`DSL_SCHEMA` 文档化新算子 |
+| `src/quantlab/contract/lint.py` | `WINDOW_OPS` 增 4、新增 `SPAN_OPS`（ewm_std）/`ALPHA_OPS`（llt）；`LOOKBACK_OPS = 三者并集`；G5 lookback 覆盖 + G6 `_rule_windows_positive_int` 泛化为三口径 |
+| `src/quantlab/x2/paper2spec.py` | `OP_ALIASES` +12；`_WINDOW_OPS` +3；`_MULTI_CHILD_OPS` +4；新增 `_UNSUPPORTED_FLAT_OPS`（neg/log/exp/llt/ewm_std）fail-closed 引导走 DSL |
+| `tests/test_p15_operators.py`（新增） | **32** 个单测：算术/数学逐元素、linreg/llt/zscore/ewm_std 语义、因果性（扰动未来不改过去）、G5/G6 lint、DSL parse/拒绝/白名单同步 |
+
+### 验证命令与输出
+
+跑测试用主检出 core venv（CLAUDE.md 纪律：工作树不 `uv sync`），
+先清外部注入的 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV`，`PYTHONPATH` 指工作树 `src`
+（editable install 的 `.pth` 指向主检出，须覆盖），并 `QUANT_ROOT` 指主检出
+（fixture/envs 数据在主检出，不在工作树）：
+
+```powershell
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:PYTHONIOENCODING='utf-8'
+$env:PYTHONPATH = (Get-Location).Path + '\src'
+$env:QUANT_ROOT = 'D:\project\quant'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p15_operators -v
+# → Ran 32 tests in …s — OK
+```
+
+```powershell
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest discover -v
+# → Ran 540 tests in 206.468s — OK（既有 508 + 新增 32，全绿，退出码 0）
+```
+
+**关键不变量（已守住，含回归锁定）**：
+
+- 白名单同步：`DSL_ALL_OPS == {op for op in _SUPPORTED_OPS.split("/") if op}`（34 个），
+  `test_p15_operators.py::TestDslOperators::test_whitelist_sync` 与既有
+  `test_p5_dsl::test_dsl_whitelist_matches_evaluate` 双锁。
+- 因果性：算术/数学逐元素天然因果；5 个窗口算子全部自动 `shift(1)` + 只向后看，
+  `TestCausality` 用「扰动未来 → 过去输出逐帧相等」钉死无未来函数（呼应 G4）。
+- 三口径窗口参数：整数 window（linreg_slope/linreg_r2/zscore/sma/…）≥ 1、alpha（llt）∈ (0,1)、
+  span（ewm_std）≥ 1，G6 泛化校验，DSL 层同步拒绝非法参数。
+- linreg 对 log(close) 做**等权**滚动 OLS（docstring 注明论文用时间加权、此处等权为近似）；
+  llt 二阶滤波直流增益=1（恒定输入收敛到该常数）；ewm_std 是收益率的指数加权波动率。
+- 离线：test_p15 全用本地合成面板，零 fixture/数据层/联网（CLAUDE.md 约定 3：供应商留空用合成夹具）。
+
+**不在本次范围**：数据契约/组合/指标的算子、真实数据 ingest、paper2spec 云端映射
+（`_UNSUPPORTED_FLAT_OPS` 对 neg/log/exp/llt/ewm_std fail-closed，引导走 DSL 路径）。
+
+### 交付：提交（不推送）
+
+```powershell
+git add -A
+git commit -m "feat(dsl): 补算子地基——算术/数学 + 专用窗口算子（阶段1）
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>"
+# → [主线-数据流统一-sources接线-3 addaf2f] 6 files changed, 653 insertions(+), 18 deletions(-)
+```
+
+**结果**：提交至分支 `主线-数据流统一-sources接线-3`，**未推送**（按任务要求）。
+
+---
+
 ## 阶段0 数据契约（多资产 ETF 轮动复现 — 仅阶段0）
 
 > 分支 `主线-数据流统一-sources接线-2`。范围：**仅阶段0**（数据契约），不含 operator / 组合 / 指标。

@@ -10,6 +10,11 @@ Sharpe 的 `periods_per_year` 一律由它（或显式覆盖）提供 —— **�
 **max_drawdown 的符号约定**：返回**带符号**的最大回撤（≤ 0，即 `equity / 峰值 − 1`
 的最小值）。带符号是为了能与累计收益**交叉核验**（`cum_return + drawdown` 在同一处
 恰好等于零），报告层再按需要取绝对值展示。
+
+**Calmar 比率口径**：`calmar_ratio = annualized_return / |max_drawdown|`。年化收益与
+最大回撤走**同一**年化口径；回撤取绝对值（`max_drawdown` 为带符号 ≤0）。当
+`max_drawdown` 为 0（净值单调不跌）时分母为 0、比率无定义，返回 `None`（报告层据此
+显示「N/A」，而非伪造一个无穷大）。
 """
 
 from __future__ import annotations
@@ -109,6 +114,27 @@ def sharpe_ratio(
     return float(excess.mean() / sd * np.sqrt(ppy))
 
 
+def calmar_ratio(
+    equity: pd.Series,
+    periods_per_year: float | None = None,
+) -> float | None:
+    """Calmar 比率 = 年化收益 / |最大回撤|（研报核心指标）。
+
+    年化收益取自 `annualized_return`，最大回撤取自 `max_drawdown`（带符号 ≤0）后
+    取绝对值，两者共用同一年化口径（`periods_per_year` 缺省由会话密度推导）。
+
+    **max_drawdown 为 0**（净值单调不跌）时分母为 0、比率无定义，返回 `None`；
+    年化收益为 NaN 时同样返回 `None`。调用方据此显示「N/A」而非伪造无穷大。
+    """
+    dd = max_drawdown(equity)
+    if not np.isfinite(dd) or dd == 0.0:
+        return None
+    ann = annualized_return(equity, periods_per_year)
+    if not np.isfinite(ann):
+        return None
+    return float(ann / abs(dd))
+
+
 def turnover(weights: pd.DataFrame) -> float:
     """换手 = Σ |Δw|（对每一行再平衡求 |Δw| 之和，再跨行累加）。
 
@@ -146,7 +172,8 @@ def performance_metrics(
             "initial_equity": float("nan"), "final_equity": float("nan"),
             "total_return": float("nan"), "annualized_return": float("nan"),
             "annualized_volatility": float("nan"), "sharpe_ratio": float("nan"),
-            "max_drawdown": float("nan"), "risk_free_rate": float(risk_free_rate),
+            "max_drawdown": float("nan"), "calmar_ratio": None,
+            "risk_free_rate": float(risk_free_rate),
             "annualization_periods": None, "annualization_note": _annualization_note(None),
         }
 
@@ -160,6 +187,7 @@ def performance_metrics(
         "annualized_volatility": annualized_volatility(returns, ppy),
         "sharpe_ratio": sharpe_ratio(returns, ppy, risk_free_rate),
         "max_drawdown": max_drawdown(values),
+        "calmar_ratio": calmar_ratio(values, ppy),
         "risk_free_rate": float(risk_free_rate),
         "annualization_periods": ppy,
         "annualization_note": _annualization_note(ppy),
