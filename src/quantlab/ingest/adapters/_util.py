@@ -60,6 +60,6 @@ def map_symbols(tickers, mapping: dict[str, int], source: str) -> list[int]:
     if unknown:
         raise ContractError(
             f"{source}: 以下代码未在 symbol_map 中配置内部 ID: {sorted(set(unknown))}。\n"
-            f"处置：在 config/sources.yaml 的标的映射中补齐；**不得**静默丢弃这些行。"
+            f"处置：在 config/sources.toml 的标的映射中补齐；**不得**静默丢弃这些行。"
         )
     return out

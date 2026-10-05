@@ -127,7 +127,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ingest = sub.add_parser("ingest", help="抓取并落成不可变快照")
     p_ingest.add_argument("--source", default="synthetic",
-                          help="数据源（synthetic / tushare / tushare_index / tushare_hk / tushare_macro）")
+                          help="数据源（config/sources.toml 中声明的 key：synthetic / "
+                               "tushare / tushare_index / tushare_hk / tushare_macro / futu）")
     p_ingest.add_argument("--universe", default="fixture", help="synthetic 的标的集合（fixture）")
     p_ingest.add_argument("--start", default=None,
                           help="起始交易日 YYYY-MM-DD（tushare；缺省=研究窗口起点）")

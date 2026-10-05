@@ -72,7 +72,7 @@ P0 环境地基 → P1 仓库骨架与环境隔离 → P2 数据层 → P3 契�
 D:\project\quant\
   pyproject.toml  uv.lock  .python-version      # core 环境（uv_build 可编辑安装）
   CLAUDE.md  LOCAL_DEPLOYMENT_PLAN.md  .gitignore
-  config\sources.yaml                            # 供应商配置（空模板，待人工填）
+  config\sources.toml                            # 供应商配置（声明式，接线见附录 A）
   docs\archive\OPEN_SOURCE_COMPARISON.md         # 归档，勿读
   docs\deploy\{EVIDENCE.md, HANDOFF.md, HANDOFF_MANUAL.md}
   envs\vbt\ { pyproject.toml, uv.lock, probe.py, entry.py,
@@ -185,7 +185,7 @@ core                    → 读 result.json 继续；失败抛 BridgeError（非
 
 - P0.1 工具/系统核查：git `2.54.0.windows.1` ✅、uv `0.11.26` ✅、D 盘剩余 ≈275 GiB ✅
 - P0.2 目录骨架 + `EVIDENCE.md` 建立；Defender 排除 `SKIPPED(no admin)`
-- P0.3 `config/sources.yaml`（空模板，**无明文密钥**）、`.gitignore`
+- P0.3 `config/sources.toml`（声明式模板，**无明文密钥**）、`.gitignore`
 - ⚠️ **`LongPathsEnabled=0` → `GateP0.long_paths=WAIVED`（人工豁免）**。**豁免 ≠ 通过**，不得解读为该检查已过
 
 ### P1 仓库骨架与环境隔离 — 🚦 **通过（无豁免项）**
@@ -369,7 +369,7 @@ uv run jupyter lab --ServerApp.ip=127.0.0.1 --ServerApp.port=8888 --ServerApp.op
 | # | 事项 | 状态 / 时机 |
 | --- | --- | --- |
 | 1 | 长路径开关 + Defender 排除（需**管理员**） | 可延后，非阻塞；命令见 `EVIDENCE.md` 文末 |
-| 2 | 数据供应商配置 | **等人工填写** `config/sources.yaml`（附录 A 模板） |
+| 2 | 数据供应商配置 | 接线已落地；**补 provider 实现即可**（附录 A 模板） |
 | 3 | x2strategy 的 LLM 通道（云端 API / 本地 Ollama） | **P5 前**决定（附录 D-5） |
 | 4 | P7 定时任务是否启用 | 默认不启用；启用须人工确认 |
 | 5 | `envs/vbt` 的 `plotly<7` 上界 | **已人工裁决**；待 vectorbt 上游适配 plotly 7 后解除 |
