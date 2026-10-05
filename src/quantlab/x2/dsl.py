@@ -40,18 +40,26 @@ from quantlab.contract.types import (
 # --------------------------------------------------------------------------- #
 DSL_FIELD_OPS = frozenset({"field"})
 DSL_CONST_OPS = frozenset({"const"})
-DSL_WINDOW_OPS = frozenset({"sma", "rolling_mean", "ema", "std", "momentum"})
+DSL_WINDOW_OPS = frozenset({
+    "sma", "rolling_mean", "ema", "std", "momentum",
+    "linreg_slope", "linreg_r2", "llt", "zscore", "ewm_std",
+})
 DSL_SHIFT_OPS = frozenset({"shift", "lag"})
+# 算术（二元 add/sub/mul/div + 一元 neg）与数学（log/exp）—— 逐元素算子，无窗口
+DSL_ARITHMETIC_OPS = frozenset({"add", "sub", "mul", "div", "neg"})
+DSL_MATH_OPS = frozenset({"log", "exp"})
 DSL_BINARY_OPS = frozenset({
     "gt", "lt", "ge", "le", "eq",
     "cross_above", "cross_below",
     "and_", "or_",
+    "add", "sub", "mul", "div",
 })
-DSL_UNARY_OPS = frozenset({"not_"})
+DSL_UNARY_OPS = frozenset({"not_", "neg", "log", "exp"})
 DSL_CROSS_SECTIONAL_OPS = frozenset({"rank", "cross_sectional_rank"})
 DSL_TERNARY_OPS = frozenset({"condition"})
 DSL_ALL_OPS = (DSL_FIELD_OPS | DSL_CONST_OPS | DSL_WINDOW_OPS
-               | DSL_SHIFT_OPS | DSL_BINARY_OPS | DSL_UNARY_OPS
+               | DSL_SHIFT_OPS | DSL_ARITHMETIC_OPS | DSL_MATH_OPS
+               | DSL_BINARY_OPS | DSL_UNARY_OPS
                | DSL_CROSS_SECTIONAL_OPS | DSL_TERNARY_OPS)
 
 # 价格字段：与 evaluate 一致，当前仅支持 close（复权收盘）。
@@ -122,9 +130,24 @@ def _parse_const(node: dict, where: str) -> Expr:
 
 def _parse_window(node: dict, op: str, where: str) -> Expr:
     name = _field_name(node, where)
-    window = _positive_int(node.get("window"), where=where, what=f"{op}.window")
     # 窗口算子自动滞后 1 期（§P3.2 G4）：LLM 永不手写因果位移。
-    return Expr(op, (Expr("shift", (Expr("field", (name,)), 1)), window))
+    shifted = Expr("shift", (Expr("field", (name,)), 1))
+    if op == "llt":
+        alpha = node.get("alpha")
+        if isinstance(alpha, bool) or not isinstance(alpha, (int, float)) \
+                or not (0.0 < float(alpha) < 1.0):
+            raise DslParseError(
+                f"{where}: {op}.alpha 必须是 (0,1) 内的数值，得到 {alpha!r}")
+        return Expr(op, (shifted, float(alpha)))
+    if op == "ewm_std":
+        span = node.get("span")
+        if isinstance(span, bool) or not isinstance(span, (int, float)) \
+                or float(span) < 1.0:
+            raise DslParseError(
+                f"{where}: {op}.span 必须是 ≥1 的数值，得到 {span!r}")
+        return Expr(op, (shifted, float(span)))
+    window = _positive_int(node.get("window"), where=where, what=f"{op}.window")
+    return Expr(op, (shifted, window))
 
 
 def _parse_shift(node: dict, op: str, where: str) -> Expr:
@@ -315,6 +338,11 @@ DSL_SCHEMA = """\
   {"op": "ema", "field": "close", "window": <正整数>}
   {"op": "std", "field": "close", "window": <正整数>}
   {"op": "momentum", "field": "close", "window": <正整数>}  // 过去 window 期收益率
+  {"op": "linreg_slope", "field": "close", "window": <正整数>}  // 对 log(close) 等权滚动 OLS 斜率
+  {"op": "linreg_r2", "field": "close", "window": <正整数>}    // 对 log(close) 等权滚动 OLS 拟合优度 R²
+  {"op": "zscore", "field": "close", "window": <正整数>}       // 滚动 (x−mean)/std
+  {"op": "llt", "field": "close", "alpha": <(0,1) 浮点, 如 0.10>}  // 低延迟趋势线（二阶滤波）
+  {"op": "ewm_std", "field": "close", "span": <≥1 数值>}      // 收益率的指数加权波动率
   {"op": "shift", "field": "close", "n": <正整数>}      // 显式滞后（一般无需手写）
   {"op": "cross_above", "args": [<节点>, <节点>]}        // 左**上穿**右（事件）
   {"op": "cross_below", "args": [<节点>, <节点>]}        // 左**下穿**右（事件）
@@ -326,13 +354,21 @@ DSL_SCHEMA = """\
   {"op": "and_", "args": [<节点>, <节点>]}               // 且
   {"op": "or_", "args": [<节点>, <节点>]}                // 或
   {"op": "not_", "args": [<节点>]}                       // 非
+  {"op": "add", "args": [<节点>, <节点>]}                 // 左 + 右（逐元素）
+  {"op": "sub", "args": [<节点>, <节点>]}                 // 左 − 右
+  {"op": "mul", "args": [<节点>, <节点>]}                 // 左 × 右
+  {"op": "div", "args": [<节点>, <节点>]}                 // 左 ÷ 右
+  {"op": "neg", "args": [<节点>]}                         // 取反
+  {"op": "log", "args": [<节点>]}                         // 自然对数
+  {"op": "exp", "args": [<节点>]}                         // 指数
   {"op": "rank", "args": [<节点>], "ascending": <bool, 默认 false>}  // 横截面排名（1=最大值）
   {"op": "cross_sectional_rank", "args": [<节点>], "ascending": <bool, 默认 false>}  // 同 rank
   {"op": "condition", "args": [<条件节点>, <节点>, <节点>]}  // 三元：pred 为真取左，否则取右
 
 关键规则：
   · 只使用上面列出的 op，不要造新算子、不要缩写、不要改名。
-  · 窗口类算子（sma/rolling_mean/ema/std/momentum）**不要**手写 shift —— parser 会自动补。
+  · 窗口类算子（sma/rolling_mean/ema/std/momentum/linreg_slope/linreg_r2/zscore/llt/ewm_std）
+    **不要**手写 shift —— parser 会自动补。llt 用 alpha、ewm_std 用 span，其余用 window。
   · 「上穿 / 金叉」用 cross_above；「下穿 / 死叉」用 cross_below —— **不要**用 gt/lt 代替。
   · 表达式的每个叶子都必须是 {"op":"field","field":"close"}。
   · args 数组的元素是「节点对象」，不是字符串、不是函数调用式文本。

@@ -46,7 +46,17 @@ from quantlab.contract.types import (
 # ---- 规则中引用的常量 ----
 PRICE_FIELDS: frozenset[str] = frozenset({"open", "high", "low", "close", "volume"})
 SHIFT_OPS: frozenset[str] = frozenset({"shift", "lag"})
-WINDOW_OPS: frozenset[str] = frozenset({"sma", "ema", "rolling_mean", "momentum", "std"})
+# 三类「回看长度」算子（G5 统一按有效窗口覆盖；G6 逐类校验参数）：
+#   WINDOW_OPS —— 整数窗口（window ≥ 1 的整数）
+#   SPAN_OPS   —— span（≥ 1 的数值，可为浮点）
+#   ALPHA_OPS  —— alpha（(0,1) 内的浮点，IIR 滤波）
+WINDOW_OPS: frozenset[str] = frozenset({
+    "sma", "ema", "rolling_mean", "momentum", "std",
+    "linreg_slope", "linreg_r2", "zscore",
+})
+SPAN_OPS: frozenset[str] = frozenset({"ewm_std"})
+ALPHA_OPS: frozenset[str] = frozenset({"llt"})
+LOOKBACK_OPS: frozenset[str] = WINDOW_OPS | SPAN_OPS | ALPHA_OPS
 
 # 读行情就必须声明可用时间，否则「防未来函数」无从谈起
 AVAILABILITY_FIELDS: dict[str, str] = {
@@ -201,16 +211,28 @@ def _scan_lookahead(expr: Expr, path: str, shifted: bool = False) -> list[LintFi
     return findings
 
 
+def _effective_window(node: Expr) -> int:
+    """算子的「有效回看长度」（G5 口径）。
+
+    整数窗口算子直接用 window；`ewm_std` 用 span；`llt` 是无限冲激响应，
+    用 2/α 近似其有效回看（α=0.10 → 20 期）。非法参数返回 0（由 G6 负责报错）。
+    """
+    value = node.args[1] if len(node.args) >= 2 else 0
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    if node.op in ALPHA_OPS:
+        return int(round(2.0 / float(value))) if 0.0 < float(value) < 1.0 else 0
+    return int(value)
+
+
 def _max_window(expr: Expr | None) -> int:
-    """表达式里用到的最大窗口（窗口类算子的整数参数）。"""
+    """表达式里用到的最大有效窗口（窗口/span/alpha 三类算子统一换算）。"""
     if expr is None:
         return 0
     best = 0
     for node in expr.walk():
-        if node.op in WINDOW_OPS and len(node.args) >= 2:
-            value = node.args[1]
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                best = max(best, int(value))
+        if node.op in LOOKBACK_OPS:
+            best = max(best, _effective_window(node))
     return best
 
 
@@ -229,13 +251,25 @@ def _rule_windows_positive_int(spec: StrategySpec, report: LintReport) -> None:
         if expr is None:
             continue
         for node in expr.walk():
-            if node.op not in WINDOW_OPS or len(node.args) < 2:
+            if node.op not in LOOKBACK_OPS or len(node.args) < 2:
                 continue
             value = node.args[1]
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 report.findings.append(LintFinding(
                     "G6.windows_positive_int", "error",
                     f"{node.op} 的窗口参数必须是数值，得到 {value!r}", location=label))
+            elif node.op in ALPHA_OPS:
+                if not (0.0 < float(value) < 1.0):
+                    report.findings.append(LintFinding(
+                        "G6.windows_positive_int", "error",
+                        f"{node.op} 的 alpha 必须是 (0,1) 内的数值，得到 {value!r}",
+                        location=label))
+            elif node.op in SPAN_OPS:
+                if float(value) < 1.0:
+                    report.findings.append(LintFinding(
+                        "G6.windows_positive_int", "error",
+                        f"{node.op} 的 span 必须是 ≥1 的数值，得到 {value!r}",
+                        location=label))
             elif value < 1 or float(value) != int(value):
                 report.findings.append(LintFinding(
                     "G6.windows_positive_int", "error",

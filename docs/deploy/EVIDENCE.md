@@ -2494,3 +2494,71 @@ gh pr create --base main --head 主线-数据流统一-sources接线 --title "fe
 ```
 
 **结果**：commit `967ee43` 已推送 origin；PR #7 已开启，target `main`。
+
+---
+
+## P15 · 算子地基（算术/数学 + 专用窗口）——「多资产 ETF 轮动」阶段 1
+
+- 执行日期：2026-10-05
+- 执行环境：Windows 11，PowerShell，orca 工作树 `主线-数据流统一-sources接线-3`
+- 执行者：AI agent
+- 范围：只补策略表达式 DSL 的一等算子（阶段 1），**不碰数据契约/组合/指标，不做任何数据 ingest**
+
+### 变更文件
+
+| 文件 | 变更 |
+| --- | --- |
+| `src/quantlab/contract/emit.py` | `_SUPPORTED_OPS` 扩至 **34** 个：+`add/sub/mul/div/neg/log/exp`（逐元素）、+`linreg_slope/linreg_r2/llt/zscore/ewm_std`（因果窗口）；新增 `_rolling_ols`/`_llt` 等 helper |
+| `src/quantlab/x2/dsl.py` | `DSL_ARITHMETIC_OPS`/`DSL_MATH_OPS` 白名单；`_parse_window` 三口径（整数 window / alpha ∈ (0,1) / span ≥ 1）；`DSL_SCHEMA` 文档化新算子 |
+| `src/quantlab/contract/lint.py` | `WINDOW_OPS` 增 4、新增 `SPAN_OPS`（ewm_std）/`ALPHA_OPS`（llt）；`LOOKBACK_OPS = 三者并集`；G5 lookback 覆盖 + G6 `_rule_windows_positive_int` 泛化为三口径 |
+| `src/quantlab/x2/paper2spec.py` | `OP_ALIASES` +12；`_WINDOW_OPS` +3；`_MULTI_CHILD_OPS` +4；新增 `_UNSUPPORTED_FLAT_OPS`（neg/log/exp/llt/ewm_std）fail-closed 引导走 DSL |
+| `tests/test_p15_operators.py`（新增） | **32** 个单测：算术/数学逐元素、linreg/llt/zscore/ewm_std 语义、因果性（扰动未来不改过去）、G5/G6 lint、DSL parse/拒绝/白名单同步 |
+
+### 验证命令与输出
+
+跑测试用主检出 core venv（CLAUDE.md 纪律：工作树不 `uv sync`），
+先清外部注入的 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV`，`PYTHONPATH` 指工作树 `src`
+（editable install 的 `.pth` 指向主检出，须覆盖），并 `QUANT_ROOT` 指主检出
+（fixture/envs 数据在主检出，不在工作树）：
+
+```powershell
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:PYTHONIOENCODING='utf-8'
+$env:PYTHONPATH = (Get-Location).Path + '\src'
+$env:QUANT_ROOT = 'D:\project\quant'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p15_operators -v
+# → Ran 32 tests in …s — OK
+```
+
+```powershell
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest discover -v
+# → Ran 540 tests in 206.468s — OK（既有 508 + 新增 32，全绿，退出码 0）
+```
+
+**关键不变量（已守住，含回归锁定）**：
+
+- 白名单同步：`DSL_ALL_OPS == {op for op in _SUPPORTED_OPS.split("/") if op}`（34 个），
+  `test_p15_operators.py::TestDslOperators::test_whitelist_sync` 与既有
+  `test_p5_dsl::test_dsl_whitelist_matches_evaluate` 双锁。
+- 因果性：算术/数学逐元素天然因果；5 个窗口算子全部自动 `shift(1)` + 只向后看，
+  `TestCausality` 用「扰动未来 → 过去输出逐帧相等」钉死无未来函数（呼应 G4）。
+- 三口径窗口参数：整数 window（linreg_slope/linreg_r2/zscore/sma/…）≥ 1、alpha（llt）∈ (0,1)、
+  span（ewm_std）≥ 1，G6 泛化校验，DSL 层同步拒绝非法参数。
+- linreg 对 log(close) 做**等权**滚动 OLS（docstring 注明论文用时间加权、此处等权为近似）；
+  llt 二阶滤波直流增益=1（恒定输入收敛到该常数）；ewm_std 是收益率的指数加权波动率。
+- 离线：test_p15 全用本地合成面板，零 fixture/数据层/联网（CLAUDE.md 约定 3：供应商留空用合成夹具）。
+
+**不在本次范围**：数据契约/组合/指标的算子、真实数据 ingest、paper2spec 云端映射
+（`_UNSUPPORTED_FLAT_OPS` 对 neg/log/exp/llt/ewm_std fail-closed，引导走 DSL 路径）。
+
+### 交付：提交（不推送）
+
+```powershell
+git add -A
+git commit -m "feat(dsl): 补算子地基——算术/数学 + 专用窗口算子（阶段1）
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>"
+# → [主线-数据流统一-sources接线-3 <sha>] 5 files changed, …
+```
+
+**结果**：提交至分支 `主线-数据流统一-sources接线-3`，**未推送**（按任务要求）。
