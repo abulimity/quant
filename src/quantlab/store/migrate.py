@@ -26,7 +26,7 @@ import duckdb
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 # schema.sql 的版本标签；改动 DDL 时应同步更新，作为漂移检测的人类可读标识。
-SCHEMA_VERSION = "0002_runs"
+SCHEMA_VERSION = "0003_close_adj"
 
 MIGRATIONS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -121,5 +121,7 @@ def schema_version(con: duckdb.DuckDBPyConnection) -> str | None:
     ).fetchone()[0]
     if not has_table:
         return None
-    row = con.execute("SELECT version FROM schema_migrations LIMIT 1").fetchone()
+    row = con.execute(
+        "SELECT version FROM schema_migrations ORDER BY applied_at DESC LIMIT 1"
+    ).fetchone()
     return row[0] if row else None

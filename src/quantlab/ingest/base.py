@@ -65,7 +65,7 @@ class Source(Protocol):
 # 属编排器职责，不是供应商数据本身的属性。
 CONTRACT: dict[str, tuple[str, ...]] = {
     "bars_daily": (
-        "symbol_id", "ts", "open", "high", "low", "close", "volume",
+        "symbol_id", "ts", "open", "high", "low", "close", "volume", "amount",
         "currency", "close_utc", "available_utc",
     ),
     "corporate_actions": (
@@ -78,7 +78,7 @@ CONTRACT: dict[str, tuple[str, ...]] = {
     ),
     "symbols": (
         "symbol_id", "ticker", "exchange", "calendar", "currency",
-        "isin", "lot_size", "listed_on", "delisted_on",
+        "isin", "lot_size", "listed_on", "delisted_on", "name", "invest_type",
     ),
 }
 

@@ -144,7 +144,7 @@ class TestReadOnlyRejectsWrites(unittest.TestCase):
         try:
             with self.assertRaises(Exception):
                 con.execute(
-                    "INSERT INTO symbols VALUES (999,'X','XSHG','XSHG','CNY',NULL,1,NULL,NULL)"
+                    "INSERT INTO symbols VALUES (999,'X','XSHG','XSHG','CNY',NULL,1,NULL,NULL,NULL,NULL)"
                 )
             self.assertEqual(
                 con.execute("SELECT count(*) FROM symbols WHERE symbol_id = 999").fetchone()[0],
@@ -242,7 +242,7 @@ class TestSingleWriterSemantics(unittest.TestCase):
         「同进程两次 connect 返回同一个 DB 实例」），子进程照样会被拒绝。
         """
         self.writer.execute(
-            "INSERT INTO symbols VALUES (1,'X','XSHG','XSHG','CNY',NULL,1,NULL,NULL)")
+            "INSERT INTO symbols VALUES (1,'X','XSHG','XSHG','CNY',NULL,1,NULL,NULL,NULL,NULL)")
         self._close_writer()
 
         for proc in [_subprocess(f"""

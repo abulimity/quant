@@ -21,7 +21,7 @@
 
 单位声明（保留原单位，不静默换算，符合「Parquet 是真相」）：
     · `fund_daily.vol` 单位 = **手**（1 手 = 100 份），原样落入 `volume`；
-      `amount`（千元）不落入契约（契约无成交额列）。
+      `fund_daily.amount` 单位 = **千元**，原样落入 `amount`（不换算为元）。
     · `fund_div.div_cash` 单位 = **每股税前现金（原币 CNY）**。
 
 可用时间口径（F.2/F.6，必须披露）：
@@ -57,6 +57,23 @@ _RAW_DATASETS: frozenset[str] = frozenset(
 # fund_basic 中需**排除**的基金类型（用户已确认：排除 REITs，其余全收）
 _EXCLUDED_FUND_TYPES = ("REITs",)
 
+# fund_basic.fund_type → 契约 invest_type（研报需要的资产类别粗分类）。
+# 未列出的类型（混合型 / 指数型 / FOF / 商品以外的另类等）一律归「其他」，
+# fail-safe 不猜测 —— 契约枚举为 股票/债券/货币/商品/qdii/其他。
+_FUND_TYPE_TO_INVEST_TYPE: dict[str, str] = {
+    "股票型": "股票",
+    "债券型": "债券",
+    "货币型": "货币",
+    "商品型": "商品",
+    "黄金型": "商品",
+    "QDII": "qdii",
+}
+
+
+def _invest_type_of(fund_type) -> str:
+    """把 fund_basic.fund_type 归入契约 invest_type；未识别归「其他」。"""
+    return _FUND_TYPE_TO_INVEST_TYPE.get(str(fund_type).strip(), "其他")
+
 # fund_div 中仅保留「已实施」的分红，排除预案/取消等未实际发生的行
 _DIV_PROC_IMPLEMENTED = "实施"
 
@@ -74,7 +91,8 @@ AVAILABILITY_NOTE = (
     "Tushare 日线/名单仅给日期、无发布时刻；日线按 F.6 采用保守滞后一日，"
     "available_utc = 交易日 + 1 天 00:00，不得称为严格 point-in-time。"
     "分红用 ann_date（公告日）作为可得时间。"
-    "volume 单位 = 手（1 手 = 100 份，未换算）；close 为未复权价。"
+    "volume 单位 = 手（1 手 = 100 份，未换算）；amount 单位 = 千元（未换算）；"
+    "close 为未复权价；name/invest_type 取自 fund_basic 原值（invest_type 为粗分类）。"
 )
 
 # A 股 15:00 CST(UTC+8) → 07:00 UTC
@@ -347,7 +365,7 @@ class TushareSource:
         return out
 
     def _normalize_symbols(self, raw: pd.DataFrame) -> pd.DataFrame:
-        _util.require_columns(raw, ("ts_code", "fund_type", "list_date"), NAME)
+        _util.require_columns(raw, ("ts_code", "fund_type", "list_date", "name"), NAME)
         if len(raw) == 0:
             raise ContractError(f"{NAME}: symbols 原始表为空")
 
@@ -366,12 +384,15 @@ class TushareSource:
             "lot_size": _CN_ETF_LOT_SIZE,
             "listed_on": _to_date(df["list_date"]),
             "delisted_on": _to_date(df["delist_date"]) if "delist_date" in df.columns else None,
+            "name": df["name"].astype(str),
+            "invest_type": [_invest_type_of(t) for t in df["fund_type"]],
         })
         return out
 
     def _normalize_bars(self, raw: pd.DataFrame) -> pd.DataFrame:
         _util.require_columns(
-            raw, ("ts_code", "trade_date", "open", "high", "low", "close", "vol"), NAME)
+            raw, ("ts_code", "trade_date", "open", "high", "low", "close", "vol", "amount"),
+            NAME)
         if len(raw) == 0:
             raise ContractError(f"{NAME}: bars 原始表为空")
 
@@ -382,7 +403,8 @@ class TushareSource:
             "high": pd.to_numeric(raw["high"]).astype("float64"),
             "low": pd.to_numeric(raw["low"]).astype("float64"),
             "close": pd.to_numeric(raw["close"]).astype("float64"),
-            "volume": pd.to_numeric(raw["vol"]).astype("float64"),   # 手，未换算
+            "volume": pd.to_numeric(raw["vol"]).astype("float64"),      # 手，未换算
+            "amount": pd.to_numeric(raw["amount"]).astype("float64"),   # 千元，未换算
         })
         out["currency"] = self.currency
         out["close_utc"] = _util.to_naive_utc(
