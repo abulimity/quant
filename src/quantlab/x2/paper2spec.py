@@ -47,17 +47,33 @@ OP_ALIASES: dict[str, str] = {
     "shift": "shift", "lag": "lag", "delay": "lag",
     "cross_above": "cross_above", "cross_below": "cross_below",
     "rank": "rank", "cross_sectional_rank": "cross_sectional_rank", "condition": "condition",
+    # 算术/数学（Task 1a）
+    "add": "add", "sub": "sub", "mul": "mul", "div": "div",
+    "neg": "neg", "log": "log", "exp": "exp",
+    # 专用窗口（Task 1b）
+    "linreg_slope": "linreg_slope", "linreg_r2": "linreg_r2",
+    "llt": "llt", "zscore": "zscore", "ewm_std": "ewm_std",
 }
 
-# 需要「价格字段 + 窗口」两个参数的算子：我们会自动补 shift(1)（§P3.2 G4）
-_WINDOW_OPS = frozenset({"sma", "ema", "std", "momentum"})
+# 需要「价格字段 + 整数窗口」两个参数的算子：我们会自动补 shift(1)（§P3.2 G4）
+_WINDOW_OPS = frozenset({
+    "sma", "ema", "std", "momentum",
+    "linreg_slope", "linreg_r2", "zscore",
+})
 
 # 多子节点算子（二元/事件/横截面/三元）：本映射器（扁平 `{name, field, params}`）
 # **无法**正确构造出多个子表达式，故收进别名表但 `_build` 里 fail-closed 拒绝 ——
 # 引导走 DSL 路径（`quantlab.x2.dsl`），而不是伪造一棵「看着像合规」的单参树。
 _MULTI_CHILD_OPS = frozenset({
     "cross_above", "cross_below", "rank", "cross_sectional_rank", "condition",
+    "add", "sub", "mul", "div",
 })
+
+# 扁平 `{name, field, params}` 无法可靠构造的算子，同样 fail-closed 引导走 DSL：
+#   neg/log/exp —— 一元，但子节点应是「任意表达式」（仅价格字段不足以表达），
+#                  直接落 field 还会违反 G4（无 shift 祖先）；
+#   llt/ewm_std —— 参数是 alpha/span（非整数窗口），扁平描述无从可靠读取。
+_UNSUPPORTED_FLAT_OPS = frozenset({"neg", "log", "exp", "llt", "ewm_std"})
 
 
 @dataclass
@@ -196,8 +212,15 @@ def _build(op_name: str, node: dict, unmapped: list[str]) -> tuple[Expr | None, 
     if mapped in _MULTI_CHILD_OPS:
         unmapped.append(
             f"算子 {op_name!r} 是多子节点算子（cross_above/cross_below/rank/"
-            f"cross_sectional_rank/condition），本映射器无法从扁平描述构造多个子表达式 "
-            f"—— 请走受控 DSL 路径（quantlab.x2.dsl）。")
+            f"cross_sectional_rank/condition/add/sub/mul/div），本映射器无法从扁平描述"
+            f"构造多个子表达式 —— 请走受控 DSL 路径（quantlab.x2.dsl）。")
+        return None, unmapped
+
+    if mapped in _UNSUPPORTED_FLAT_OPS:
+        unmapped.append(
+            f"算子 {op_name!r} 无法用扁平 name/field/params 可靠构造"
+            f"（neg/log/exp 需要任意子表达式，llt/ewm_std 用 alpha/span）—— "
+            f"请走受控 DSL 路径（quantlab.x2.dsl）。")
         return None, unmapped
 
     raw = node.get("params") or node.get("parameters") or node.get("args") or []

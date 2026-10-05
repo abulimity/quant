@@ -45,6 +45,7 @@ TSH_BARS_RAW = pd.DataFrame({
     "low": [3.480, 3.500],
     "close": [3.540, 3.510],
     "vol": [1_200_000.0, 980_000.0],
+    "amount": [42_480.0, 34_398.0],   # 千元（未换算）
 })
 
 # 同一 (ts_code, ex_date) 系统重复 3 行「实施」+ 1 行「预案」→ 过滤+去重后应只剩 1 行
@@ -60,6 +61,7 @@ TSH_DIV_RAW = pd.DataFrame({
 # 3 只：SH / SZ / REITs（REITs 应被排除，且无需 symbol_id）
 TSH_BASIC_RAW = pd.DataFrame({
     "ts_code": ["510300.SH", "159919.SZ", "508000.SH"],
+    "name": ["沪深300ETF", "创业板ETF", "REITs基金"],
     "fund_type": ["股票型", "股票型", "REITs"],
     "list_date": ["20120528", "20121225", "20210621"],
     "delist_date": [None, None, None],
@@ -112,6 +114,11 @@ class TestNormalizeBars(unittest.TestCase):
         """F.6 单位声明：vol(手) 原样落入 volume，不静默换算。"""
         out = TushareSource(dataset="bars_daily", symbol_map=_BAR_MAP).normalize(TSH_BARS_RAW)
         self.assertEqual(float(out["volume"].iloc[0]), 1_200_000.0)
+
+    def test_amount_kept_in_thousand_yuan(self) -> None:
+        """F.6 单位声明：amount(千元) 原样落入 amount，不静默换算为元。"""
+        out = TushareSource(dataset="bars_daily", symbol_map=_BAR_MAP).normalize(TSH_BARS_RAW)
+        self.assertEqual(float(out["amount"].iloc[0]), 42_480.0)
 
     def test_availability_is_conservative_lag(self) -> None:
         out = TushareSource(dataset="bars_daily", symbol_map=_BAR_MAP).normalize(TSH_BARS_RAW)
@@ -166,6 +173,21 @@ class TestNormalizeSymbols(unittest.TestCase):
         self.assertEqual(row["listed_on"], date(2012, 5, 28))
         self.assertEqual(row["lot_size"], 100)
         self.assertEqual(row["currency"], "CNY")
+
+    def test_name_and_invest_type_kept(self) -> None:
+        """name 原样落入；fund_type → invest_type 粗分类映射。"""
+        out = TushareSource(dataset="symbols", symbol_map=_BASIC_MAP).normalize(TSH_BASIC_RAW)
+        by_ticker = dict(zip(out["ticker"], out[["name", "invest_type"]].to_numpy()))
+        self.assertEqual(by_ticker["510300.SH"][0], "沪深300ETF")
+        self.assertEqual(by_ticker["510300.SH"][1], "股票")
+
+    def test_unlisted_fund_type_maps_to_other(self) -> None:
+        """未列出的 fund_type（如 混合型）fail-safe 归「其他」，不猜测。"""
+        raw = TSH_BASIC_RAW.copy()
+        raw.loc[raw["ts_code"] == "159919.SZ", "fund_type"] = "混合型"
+        out = TushareSource(dataset="symbols", symbol_map=_BASIC_MAP).normalize(raw)
+        row = out[out["ticker"] == "159919.SZ"].iloc[0]
+        self.assertEqual(row["invest_type"], "其他")
 
 
 class TestFailClosed(unittest.TestCase):

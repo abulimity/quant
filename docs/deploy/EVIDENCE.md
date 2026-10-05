@@ -2535,3 +2535,168 @@ gh pr create --base main --head 主线-数据流统一-sources接线 --title "fe
 「工作树不落数据」纪律一致，非本次改动引入。matplotlib 中文字形缺 glyph 的 UserWarning
 为既有现象（DejaVu Sans 无 CJK），不影响断言。
 
+---
+
+## P15 · 算子地基（算术/数学 + 专用窗口）——「多资产 ETF 轮动」阶段 1
+
+- 执行日期：2026-10-05
+- 执行环境：Windows 11，PowerShell，orca 工作树 `主线-数据流统一-sources接线-3`
+- 执行者：AI agent
+- 范围：只补策略表达式 DSL 的一等算子（阶段 1），**不碰数据契约/组合/指标，不做任何数据 ingest**
+
+### 变更文件
+
+| 文件 | 变更 |
+| --- | --- |
+| `src/quantlab/contract/emit.py` | `_SUPPORTED_OPS` 扩至 **34** 个：+`add/sub/mul/div/neg/log/exp`（逐元素）、+`linreg_slope/linreg_r2/llt/zscore/ewm_std`（因果窗口）；新增 `_rolling_ols`/`_llt` 等 helper |
+| `src/quantlab/x2/dsl.py` | `DSL_ARITHMETIC_OPS`/`DSL_MATH_OPS` 白名单；`_parse_window` 三口径（整数 window / alpha ∈ (0,1) / span ≥ 1）；`DSL_SCHEMA` 文档化新算子 |
+| `src/quantlab/contract/lint.py` | `WINDOW_OPS` 增 4、新增 `SPAN_OPS`（ewm_std）/`ALPHA_OPS`（llt）；`LOOKBACK_OPS = 三者并集`；G5 lookback 覆盖 + G6 `_rule_windows_positive_int` 泛化为三口径 |
+| `src/quantlab/x2/paper2spec.py` | `OP_ALIASES` +12；`_WINDOW_OPS` +3；`_MULTI_CHILD_OPS` +4；新增 `_UNSUPPORTED_FLAT_OPS`（neg/log/exp/llt/ewm_std）fail-closed 引导走 DSL |
+| `tests/test_p15_operators.py`（新增） | **32** 个单测：算术/数学逐元素、linreg/llt/zscore/ewm_std 语义、因果性（扰动未来不改过去）、G5/G6 lint、DSL parse/拒绝/白名单同步 |
+
+### 验证命令与输出
+
+跑测试用主检出 core venv（CLAUDE.md 纪律：工作树不 `uv sync`），
+先清外部注入的 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV`，`PYTHONPATH` 指工作树 `src`
+（editable install 的 `.pth` 指向主检出，须覆盖），并 `QUANT_ROOT` 指主检出
+（fixture/envs 数据在主检出，不在工作树）：
+
+```powershell
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:PYTHONIOENCODING='utf-8'
+$env:PYTHONPATH = (Get-Location).Path + '\src'
+$env:QUANT_ROOT = 'D:\project\quant'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_p15_operators -v
+# → Ran 32 tests in …s — OK
+```
+
+```powershell
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest discover -v
+# → Ran 540 tests in 206.468s — OK（既有 508 + 新增 32，全绿，退出码 0）
+```
+
+**关键不变量（已守住，含回归锁定）**：
+
+- 白名单同步：`DSL_ALL_OPS == {op for op in _SUPPORTED_OPS.split("/") if op}`（34 个），
+  `test_p15_operators.py::TestDslOperators::test_whitelist_sync` 与既有
+  `test_p5_dsl::test_dsl_whitelist_matches_evaluate` 双锁。
+- 因果性：算术/数学逐元素天然因果；5 个窗口算子全部自动 `shift(1)` + 只向后看，
+  `TestCausality` 用「扰动未来 → 过去输出逐帧相等」钉死无未来函数（呼应 G4）。
+- 三口径窗口参数：整数 window（linreg_slope/linreg_r2/zscore/sma/…）≥ 1、alpha（llt）∈ (0,1)、
+  span（ewm_std）≥ 1，G6 泛化校验，DSL 层同步拒绝非法参数。
+- linreg 对 log(close) 做**等权**滚动 OLS（docstring 注明论文用时间加权、此处等权为近似）；
+  llt 二阶滤波直流增益=1（恒定输入收敛到该常数）；ewm_std 是收益率的指数加权波动率。
+- 离线：test_p15 全用本地合成面板，零 fixture/数据层/联网（CLAUDE.md 约定 3：供应商留空用合成夹具）。
+
+**不在本次范围**：数据契约/组合/指标的算子、真实数据 ingest、paper2spec 云端映射
+（`_UNSUPPORTED_FLAT_OPS` 对 neg/log/exp/llt/ewm_std fail-closed，引导走 DSL 路径）。
+
+### 交付：提交（不推送）
+
+```powershell
+git add -A
+git commit -m "feat(dsl): 补算子地基——算术/数学 + 专用窗口算子（阶段1）
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>"
+# → [主线-数据流统一-sources接线-3 addaf2f] 6 files changed, 653 insertions(+), 18 deletions(-)
+```
+
+**结果**：提交至分支 `主线-数据流统一-sources接线-3`，**未推送**（按任务要求）。
+
+---
+
+## 阶段0 数据契约（多资产 ETF 轮动复现 — 仅阶段0）
+
+> 分支 `主线-数据流统一-sources接线-2`。范围：**仅阶段0**（数据契约），不含 operator / 组合 / 指标。
+> 三个子任务：0a（契约列）、0b（基准指数）、0c（复权层 + store 暴露）。
+
+### 0a — 契约列：symbols.name/invest_type、bars_daily.amount
+
+- `schema.sql`：symbols 增 `name TEXT` + `invest_type TEXT`（CHECK 枚举 股票/债券/货币/商品/qdii/其他），
+  bars_daily 增 `amount DOUBLE`；三处 `ALTER TABLE ADD COLUMN IF NOT EXISTS` 兜底旧库。
+- `base.py` CONTRACT：symbols/bars_daily 契约列同步（新列可空 —— `REQUIRED_NON_NULL` 不含它们）。
+- tushare：`_FUND_TYPE_TO_INVEST_TYPE` 映射 fund_type→invest_type；symbols 保留 name、bars_daily 保留 amount（千元口径）。
+- futu/akshare/yfinance：bars_daily 产出 amount；`_hk_symbols_to_contract` 产出 name + invest_type=其他。
+- 合成夹具：name/invest_type/amount **派生**（不进 SymbolSpec）→ `spec_fingerprint` 不变 → 合成 snapshot_id 不变。
+- 回归：`test_tushare.py`（name/invest_type/amount 保留）、`test_futu.py`（amount=turnover）、
+  `test_p2_4_adapters.py`（akshare 成交额、amount 空值校验）、`test_p2_1_contract.py`、`test_p2_3_store.py`（symbols 11 列）。
+
+### 0b — 基准指数：中证2000 / 中证红利
+
+`realdata.py::_BENCHMARK_INDICES` 增 `932000.CSI`（中证2000）、`000922.CSI`（中证红利），
+覆盖报告所需的 上证指数(000001.SH)、创业板指(399006.SZ)、中证2000、中证红利。
+
+**真实 ingest（单写，主检出环境）**：
+
+首次尝试（token 未就绪，如实记录）：
+
+```powershell
+# 主检出环境；先清注入的 UV_PROJECT_ENVIRONMENT/VIRTUAL_ENV，QUANT_ROOT 指向主检出，
+# PYTHONPATH 指向工作树 src（override 主检出 .venv 里的 quant.pth，使代码改动生效）
+$env:QUANT_ROOT = 'D:\project\quant'
+$env:PYTHONPATH = '<工作树>\src'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m quantlab.cli ingest --source tushare_index
+# → quantlab.ingest.base.ContractError:
+#     tushare: 未提供 TUSHARE_TOKEN（环境变量 TUSHARE_TOKEN 或构造参数）。凭据一律走环境变量，不得写入仓库。
+```
+
+补跑（TUSHARE_TOKEN 就绪后；token 从 User 环境变量注入，**不落盘、不回显**）：
+
+```powershell
+$env:TUSHARE_TOKEN = [System.Environment]::GetEnvironmentVariable('TUSHARE_TOKEN','User')
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:QUANT_ROOT = 'D:\project\quant'
+$env:PYTHONPATH = '<工作树>\src'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m quantlab.cli ingest --source tushare_index
+# → {"snapshot_id":"tushare_index-b170e23a8bad9cb7","status":"ok",
+#    "path":"D:\\project\\quant\\data\\bronze\\tushare\\tushare_index-b170e23a8bad9cb7",
+#    "row_counts":{"index_symbols":8000,"index_daily":27954}, ..., "already_present":false}
+```
+
+**验证（报告所需 4 指数均落盘，10 年窗口各 2431 行）**：
+
+```
+distinct ts_code in index_daily: 12
+required present: {'000001.SH': True, '399006.SZ': True, '932000.CSI': True, '000922.CSI': True}
+  000001.SH: min=2015-01-05 max=2024-12-31 rows=2431
+  399006.SZ: min=2015-01-05 max=2024-12-31 rows=2431
+  932000.CSI: min=2015-01-05 max=2024-12-31 rows=2431
+  000922.CSI: min=2015-01-05 max=2024-12-31 rows=2431
+```
+
+台账（`data/warehouse.duckdb`，read_only）已登记：`index_symbols` 8000 / `index_daily` 27954，status=ok。
+
+**结果：0b 关闭。** snapshot `tushare_index-b170e23a8bad9cb7` 已落主检出 bronze，4 个报告所需指数齐全。
+
+### 0c — close_adj 复权层 + store 暴露
+
+- `quality/clean.py`：`forward_adjust_close`（拆分后复权 split_forward / 供应商复权因子后复权 fund_adj_forward，D0 锚定）。
+- `store/warehouse.py`：`materialize_close_adj`（单快照物化进 close_adj 表）；`register_snapshot_views` 把 raw 表
+  （fund_adj/index_daily）也挂成零拷贝视图；`v_close_adj_latest` 绑定最新成功快照。
+- `store/snapshot_guard.py`：close_adj 列入 FACT_TABLES（裸读被拒），v_close_adj_latest 列入 SAFE_VIEWS。
+- `store/migrate.py`：SCHEMA_VERSION = 0003_close_adj。
+- 回归：`tests/test_close_adj.py`（拆分/复权因子两条口径、物化行数、视图单快照、raw 视图存在）。
+
+### 全量回归
+
+```powershell
+cd '<工作树>'
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:QUANT_ROOT = 'D:\project\quant'   # 让合成夹具读主检出已有快照（不在工作树 data/ 落数据）
+$env:PYTHONPATH = '<工作树>\src'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest discover -t . -s tests
+# → Ran 519 tests in 199.867s — OK（含既有 + 新增 test_close_adj.py 及 0a/0b/0c 回归，全绿，退出码 0）
+```
+
+### 交付：提交（未推送）
+
+```powershell
+git add -A
+git commit -m "feat(store): 阶段0数据契约——symbols/invest_type、bars_daily.amount、close_adj 复权层"
+# → [主线-数据流统一-sources接线-2 299761f] 18 files changed, 446 insertions(+), 26 deletions(-)
+```
+
+**结果**：commit `299761f` 已提交回分支 `主线-数据流统一-sources接线-2`；**未 push**（收口统一做）。
+
+**0b 补跑**：TUSHARE_TOKEN 就绪后补跑成功，snapshot `tushare_index-b170e23a8bad9cb7` 已落主检出 bronze，
+4 个报告所需指数齐全（见 0b 节验证）；补跑与留证随本 docs 提交一并落库，仍**未 push**。

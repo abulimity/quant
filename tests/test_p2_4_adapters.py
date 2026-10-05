@@ -65,6 +65,7 @@ AKSHARE_RAW = pd.DataFrame({
     "最低": [3.480, 3.500],
     "收盘": [3.540, 3.510],
     "成交量": [1_200_000, 980_000],
+    "成交额": [42_480_000.0, 34_398_000.0],
 })
 
 YF_BARS_ADJ = pd.DataFrame({
@@ -221,6 +222,7 @@ class TestFailClosedOnBadInput(unittest.TestCase):
         df = pd.DataFrame({
             "symbol_id": [1], "ts": [date(2024, 1, 2)],
             "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [0.0],
+            "amount": [0.0],
             "currency": ["CNY"], "close_utc": [pd.Timestamp("2024-01-02 07:00")],
             "available_utc": [None],
         })

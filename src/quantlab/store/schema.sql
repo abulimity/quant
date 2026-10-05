@@ -29,7 +29,10 @@ CREATE TABLE IF NOT EXISTS symbols (
     lot_size    INTEGER,
     listed_on   DATE,
     delisted_on DATE,
-    CHECK (delisted_on IS NULL OR listed_on IS NULL OR delisted_on >= listed_on)
+    name        TEXT,                        -- 标的名称（基金简称等；bronze 名单可空）
+    invest_type TEXT,                        -- 资产类别：股票/债券/货币/商品/qdii/其他
+    CHECK (delisted_on IS NULL OR listed_on IS NULL OR delisted_on >= listed_on),
+    CHECK (invest_type IS NULL OR invest_type IN ('股票', '债券', '货币', '商品', 'qdii', '其他'))
 );
 
 CREATE TABLE IF NOT EXISTS bars_daily (
@@ -40,6 +43,7 @@ CREATE TABLE IF NOT EXISTS bars_daily (
     low           DOUBLE,
     close         DOUBLE,
     volume        DOUBLE,
+    amount        DOUBLE,                    -- 成交额（保留供应商原单位，不静默换算）
     currency      TEXT,
     close_utc     TIMESTAMP,                 -- 该根 bar 的本地收盘时刻（naive UTC）
     available_utc TIMESTAMP NOT NULL,        -- **关键**：此数据何时可用
@@ -180,6 +184,49 @@ CREATE OR REPLACE VIEW v_bars_latest AS
 SELECT b.*
 FROM bars_daily AS b
 WHERE b.snapshot_id = (
+    SELECT r.snapshot_id
+    FROM ingest_runs AS r
+    WHERE r.dataset = 'bars_daily' AND r.status = 'ok'
+    ORDER BY r.finished_at DESC
+    LIMIT 1
+);
+
+-- ---------------------------------------------------------------------------
+-- 增量迁移：已存在的仓库（旧版本 schema）里，CREATE TABLE IF NOT EXISTS 不会给
+-- 已建表补列。此处用 ALTER ... ADD COLUMN IF NOT EXISTS 幂等补齐新增字段；
+-- 全新库则由上面的 CREATE TABLE 直接带出，ALTER 成为 no-op。
+-- 注意：invest_type 的 CHECK 枚举只落在 CREATE TABLE（DuckDB 无法幂等地为
+-- 已建表追加 CHECK），旧库新增的列不受该枚举约束 —— 契约层已由 adapters 保证取值。
+-- ---------------------------------------------------------------------------
+ALTER TABLE symbols ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE symbols ADD COLUMN IF NOT EXISTS invest_type TEXT;
+ALTER TABLE bars_daily ADD COLUMN IF NOT EXISTS amount DOUBLE;
+
+-- ---------------------------------------------------------------------------
+-- 复权收盘（silver 层，P0c）：后复权，D0 = 该标的最早交易日，最初价不变。
+-- 与 bars_daily 分离成独立表，不改 bars_daily 的快照语义（Parquet 仍是真相）。
+-- adj_factor 是「后复权归一因子」（fund_adj_forward 用供应商因子归一，
+-- split_forward 用拆分累积因子）；method 记录复权口径，可溯源。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS close_adj (
+    symbol_id     BIGINT NOT NULL REFERENCES symbols(symbol_id),
+    ts            DATE   NOT NULL,
+    close_adj     DOUBLE,
+    adj_factor    DOUBLE,                     -- 后复权归一因子（初始日 = 1）
+    method        TEXT   NOT NULL,            -- fund_adj_forward / split_forward / none
+    available_utc TIMESTAMP NOT NULL,         -- 继承自对应 bar 的可用时间
+    source        TEXT   NOT NULL,
+    snapshot_id   TEXT   NOT NULL,
+    PRIMARY KEY (symbol_id, ts, snapshot_id),
+    CHECK (method IN ('fund_adj_forward', 'split_forward', 'none'))
+);
+
+-- v_close_adj_latest：与 v_bars_latest 绑定同一份最新成功快照（复权价始终由
+-- 同一快照的 raw bar 派生），单快照，绝不跨快照混合。
+CREATE OR REPLACE VIEW v_close_adj_latest AS
+SELECT c.*
+FROM close_adj AS c
+WHERE c.snapshot_id = (
     SELECT r.snapshot_id
     FROM ingest_runs AS r
     WHERE r.dataset = 'bars_daily' AND r.status = 'ok'

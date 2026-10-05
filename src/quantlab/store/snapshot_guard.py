@@ -25,11 +25,12 @@ import re
 
 # 带 snapshot_id 的事实表：读取时必须限定单一快照
 FACT_TABLES: frozenset[str] = frozenset(
-    {"bars_daily", "corporate_actions", "fx_rates", "macro_series", "fundamentals"}
+    {"bars_daily", "corporate_actions", "fx_rates", "macro_series", "fundamentals",
+     "close_adj"}
 )
 
 # 已是单快照语义的视图，允许直接读
-SAFE_VIEWS: frozenset[str] = frozenset({"v_bars_latest"})
+SAFE_VIEWS: frozenset[str] = frozenset({"v_bars_latest", "v_close_adj_latest"})
 
 # 事实表引用：FROM/JOIN 后紧跟的标识符（兼容别名写法）
 _TABLE_REF = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)

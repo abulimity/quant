@@ -77,7 +77,9 @@ class MarketData:
 _SUPPORTED_OPS = (
     "field/const/shift/lag/sma/rolling_mean/std/ema/momentum/"
     "gt/lt/ge/le/eq/cross_above/cross_below/and_/or_/not_/"
-    "rank/cross_sectional_rank/condition"
+    "rank/cross_sectional_rank/condition/"
+    "add/sub/mul/div/neg/log/exp/"
+    "linreg_slope/linreg_r2/llt/zscore/ewm_std"
 )
 
 
@@ -121,6 +123,30 @@ def evaluate(expr: Expr, prices: pd.DataFrame) -> pd.DataFrame:
         child = evaluate(args[0], prices)
         return child / child.shift(n) - 1.0
 
+    if op in ("linreg_slope", "linreg_r2"):
+        # 滚动 OLS：对 log(close) 拟合 y = a + b·t，返回斜率 b 或拟合优度 R²。
+        # 论文用时间加权回归，此处等权为近似（编排计划 D1）。
+        n = _window(args, op)
+        log_y = np.log(evaluate(args[0], prices))
+        slope, r2 = _rolling_ols(log_y, n)
+        return slope if op == "linreg_slope" else r2
+
+    if op == "zscore":
+        n = _window(args, op)
+        child = evaluate(args[0], prices)
+        roll = child.rolling(n, min_periods=n)
+        return (child - roll.mean()) / roll.std()
+
+    if op == "ewm_std":
+        # 指数加权波动率（对收益率）：pct_change 后做 EWM 标准差，因果。
+        span = _span(args, op)
+        child = evaluate(args[0], prices)
+        return child.pct_change().ewm(span=span, min_periods=int(span), adjust=False).std()
+
+    if op == "llt":
+        # 低延迟趋势线（二阶滤波），因果；α ∈ (0,1)。
+        return _llt(evaluate(args[0], prices), _alpha(args, op))
+
     if op in ("gt", "lt", "ge", "le", "eq"):
         left, right = _binary(args, prices, op)
         if op == "gt":
@@ -151,6 +177,25 @@ def evaluate(expr: Expr, prices: pd.DataFrame) -> pd.DataFrame:
 
     if op == "not_":
         return ~evaluate(args[0], prices).fillna(False).astype(bool)
+
+    if op in ("add", "sub", "mul", "div"):
+        left, right = _binary(args, prices, op)
+        if op == "add":
+            return left + right
+        if op == "sub":
+            return left - right
+        if op == "mul":
+            return left * right
+        return left / right
+
+    if op == "neg":
+        return -_unary(args, prices, op)
+
+    if op == "log":
+        return np.log(_unary(args, prices, op))
+
+    if op == "exp":
+        return np.exp(_unary(args, prices, op))
 
     if op in ("rank", "cross_sectional_rank"):
         if not args:
@@ -193,6 +238,87 @@ def _as_frame(value, prices: pd.DataFrame) -> pd.DataFrame:
     if isinstance(value, Expr):
         return evaluate(value, prices)
     return pd.DataFrame(float(value), index=prices.index, columns=prices.columns)
+
+
+def _unary(args: tuple, prices: pd.DataFrame, op: str) -> pd.DataFrame:
+    if len(args) != 1:
+        raise ContractViolation(f"{op} 需要一个参数，得到 {len(args)}")
+    return _as_frame(args[0], prices)
+
+
+def _alpha(args: tuple, op: str) -> float:
+    if len(args) < 2:
+        raise ContractViolation(f"{op} 需要 (序列, alpha) 两个参数")
+    a = args[1]
+    if isinstance(a, bool) or not isinstance(a, (int, float)) or not (0.0 < float(a) < 1.0):
+        raise ContractViolation(f"{op} 的 alpha 必须是 (0,1) 内的数值，得到 {a!r}")
+    return float(a)
+
+
+def _span(args: tuple, op: str) -> float:
+    if len(args) < 2:
+        raise ContractViolation(f"{op} 需要 (序列, span) 两个参数")
+    s = args[1]
+    if isinstance(s, bool) or not isinstance(s, (int, float)) or float(s) < 1.0:
+        raise ContractViolation(f"{op} 的 span 必须是 ≥1 的数值，得到 {s!r}")
+    return float(s)
+
+
+def _rolling_ols(log_y: pd.DataFrame, window: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """等权滚动最小二乘：y = a + b·x（x=0..window−1），返回 (斜率 b, 拟合优度 R²)。
+
+    因果：只用窗口内**过去** window 个观测（`rolling(min_periods=window)` + `shift`）。
+    R² 取简单线性回归的 r²（= 皮尔逊相关系数平方）；y 恒定时方差为 0，R² 为 NaN。
+    """
+    n = window
+    x = np.arange(n, dtype="float64")
+    sx = float(x.sum())
+    sx2 = float((x * x).sum())
+    denom = n * sx2 - sx * sx                 # = n·Σx² − (Σx)²，恒 > 0
+    sum_y = log_y.rolling(n, min_periods=n).sum()
+    sum_y2 = (log_y ** 2).rolling(n, min_periods=n).sum()
+    sum_xy = pd.DataFrame(0.0, index=log_y.index, columns=log_y.columns)
+    for k in range(n):
+        # 窗口内第 k 个观测（k=0 为最旧，权重 x[k]=k）
+        sum_xy = sum_xy + x[k] * log_y.shift(n - 1 - k)
+    slope = (n * sum_xy - sx * sum_y) / denom
+    numerator = (n * sum_xy - sx * sum_y) ** 2
+    r2 = numerator / (denom * (n * sum_y2 - sum_y ** 2))
+    return slope, r2
+
+
+def _llt(child: pd.DataFrame, alpha: float) -> pd.DataFrame:
+    """低延迟趋势线（二阶滤波），因果。
+
+    二阶低滞后滤波器（α ∈ (0,1)；α=0.10 为研报场景）：
+        LLT[t] = (α − α²/4)·x[t] + (α²/2)·x[t−1] − (α − 3α²/4)·x[t−2]
+                 + 2(1−α)·LLT[t−1] − (1−α)²·LLT[t−2]
+    直流增益为 1（恒定输入收敛到该常数）；双极点 (1−α) 稳定。前两行与缺口处输出 NaN。
+    """
+    a = float(alpha)
+    c0 = a - a * a / 4.0
+    c1 = a * a / 2.0
+    c2 = -(a - 3.0 * a * a / 4.0)
+    b1 = 2.0 * (1.0 - a)
+    b2 = -(1.0 - a) ** 2
+    x = child.to_numpy(dtype="float64")
+    rows, cols = x.shape
+    out = np.full((rows, cols), np.nan)
+    for j in range(cols):
+        y1 = 0.0
+        y2 = 0.0
+        for i in range(rows):
+            if i < 2:
+                continue
+            x0 = x[i, j]
+            xm1 = x[i - 1, j]
+            xm2 = x[i - 2, j]
+            if np.isnan(x0) or np.isnan(xm1) or np.isnan(xm2):
+                continue                       # 缺口：输出保持 NaN，状态不回卷
+            y0 = c0 * x0 + c1 * xm1 + c2 * xm2 + b1 * y1 + b2 * y2
+            out[i, j] = y0
+            y2, y1 = y1, y0
+    return pd.DataFrame(out, index=child.index, columns=child.columns)
 
 
 # --------------------------------------------------------------------------- #

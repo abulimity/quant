@@ -42,9 +42,10 @@ from tests import helpers
 EXPECTED_TABLES = {
     "symbols", "bars_daily", "corporate_actions", "fx_rates",
     "trading_calendar", "macro_series", "fundamentals", "ingest_runs",
-    "schema_migrations",
+    "schema_migrations", "close_adj",
 }
-FACT_TABLES = ["bars_daily", "corporate_actions", "fx_rates", "macro_series", "fundamentals"]
+FACT_TABLES = ["bars_daily", "corporate_actions", "fx_rates", "macro_series",
+               "fundamentals", "close_adj"]
 
 
 class TestSchemaShape(unittest.TestCase):
@@ -68,7 +69,9 @@ class TestSchemaShape(unittest.TestCase):
         rows = self.con.execute(
             "SELECT table_name FROM information_schema.views WHERE table_schema = 'main'"
         ).fetchall()
-        self.assertIn("v_bars_latest", {r[0] for r in rows})
+        view_names = {r[0] for r in rows}
+        self.assertIn("v_bars_latest", view_names)
+        self.assertIn("v_close_adj_latest", view_names)
 
     def test_ddl_is_idempotent(self) -> None:
         """V1：重复执行不报错、不重复登记、结构不变，但**确实执行了**语句。"""
@@ -305,6 +308,11 @@ class TestSnapshotGuard(unittest.TestCase):
 
     def test_view_allowed(self) -> None:
         assert_single_snapshot("SELECT * FROM v_bars_latest")
+
+    def test_close_adj_is_guarded_and_its_view_allowed(self) -> None:
+        with self.assertRaises(SnapshotLeakError):
+            assert_single_snapshot("SELECT * FROM close_adj")
+        assert_single_snapshot("SELECT * FROM v_close_adj_latest")
 
     def test_non_fact_table_allowed(self) -> None:
         assert_single_snapshot("SELECT * FROM symbols")
