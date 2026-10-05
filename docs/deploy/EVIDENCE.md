@@ -2494,3 +2494,101 @@ gh pr create --base main --head 主线-数据流统一-sources接线 --title "fe
 ```
 
 **结果**：commit `967ee43` 已推送 origin；PR #7 已开启，target `main`。
+
+---
+
+## 阶段0 数据契约（多资产 ETF 轮动复现 — 仅阶段0）
+
+> 分支 `主线-数据流统一-sources接线-2`。范围：**仅阶段0**（数据契约），不含 operator / 组合 / 指标。
+> 三个子任务：0a（契约列）、0b（基准指数）、0c（复权层 + store 暴露）。
+
+### 0a — 契约列：symbols.name/invest_type、bars_daily.amount
+
+- `schema.sql`：symbols 增 `name TEXT` + `invest_type TEXT`（CHECK 枚举 股票/债券/货币/商品/qdii/其他），
+  bars_daily 增 `amount DOUBLE`；三处 `ALTER TABLE ADD COLUMN IF NOT EXISTS` 兜底旧库。
+- `base.py` CONTRACT：symbols/bars_daily 契约列同步（新列可空 —— `REQUIRED_NON_NULL` 不含它们）。
+- tushare：`_FUND_TYPE_TO_INVEST_TYPE` 映射 fund_type→invest_type；symbols 保留 name、bars_daily 保留 amount（千元口径）。
+- futu/akshare/yfinance：bars_daily 产出 amount；`_hk_symbols_to_contract` 产出 name + invest_type=其他。
+- 合成夹具：name/invest_type/amount **派生**（不进 SymbolSpec）→ `spec_fingerprint` 不变 → 合成 snapshot_id 不变。
+- 回归：`test_tushare.py`（name/invest_type/amount 保留）、`test_futu.py`（amount=turnover）、
+  `test_p2_4_adapters.py`（akshare 成交额、amount 空值校验）、`test_p2_1_contract.py`、`test_p2_3_store.py`（symbols 11 列）。
+
+### 0b — 基准指数：中证2000 / 中证红利
+
+`realdata.py::_BENCHMARK_INDICES` 增 `932000.CSI`（中证2000）、`000922.CSI`（中证红利），
+覆盖报告所需的 上证指数(000001.SH)、创业板指(399006.SZ)、中证2000、中证红利。
+
+**真实 ingest（单写，主检出环境）**：
+
+首次尝试（token 未就绪，如实记录）：
+
+```powershell
+# 主检出环境；先清注入的 UV_PROJECT_ENVIRONMENT/VIRTUAL_ENV，QUANT_ROOT 指向主检出，
+# PYTHONPATH 指向工作树 src（override 主检出 .venv 里的 quant.pth，使代码改动生效）
+$env:QUANT_ROOT = 'D:\project\quant'
+$env:PYTHONPATH = '<工作树>\src'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m quantlab.cli ingest --source tushare_index
+# → quantlab.ingest.base.ContractError:
+#     tushare: 未提供 TUSHARE_TOKEN（环境变量 TUSHARE_TOKEN 或构造参数）。凭据一律走环境变量，不得写入仓库。
+```
+
+补跑（TUSHARE_TOKEN 就绪后；token 从 User 环境变量注入，**不落盘、不回显**）：
+
+```powershell
+$env:TUSHARE_TOKEN = [System.Environment]::GetEnvironmentVariable('TUSHARE_TOKEN','User')
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:QUANT_ROOT = 'D:\project\quant'
+$env:PYTHONPATH = '<工作树>\src'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m quantlab.cli ingest --source tushare_index
+# → {"snapshot_id":"tushare_index-b170e23a8bad9cb7","status":"ok",
+#    "path":"D:\\project\\quant\\data\\bronze\\tushare\\tushare_index-b170e23a8bad9cb7",
+#    "row_counts":{"index_symbols":8000,"index_daily":27954}, ..., "already_present":false}
+```
+
+**验证（报告所需 4 指数均落盘，10 年窗口各 2431 行）**：
+
+```
+distinct ts_code in index_daily: 12
+required present: {'000001.SH': True, '399006.SZ': True, '932000.CSI': True, '000922.CSI': True}
+  000001.SH: min=2015-01-05 max=2024-12-31 rows=2431
+  399006.SZ: min=2015-01-05 max=2024-12-31 rows=2431
+  932000.CSI: min=2015-01-05 max=2024-12-31 rows=2431
+  000922.CSI: min=2015-01-05 max=2024-12-31 rows=2431
+```
+
+台账（`data/warehouse.duckdb`，read_only）已登记：`index_symbols` 8000 / `index_daily` 27954，status=ok。
+
+**结果：0b 关闭。** snapshot `tushare_index-b170e23a8bad9cb7` 已落主检出 bronze，4 个报告所需指数齐全。
+
+### 0c — close_adj 复权层 + store 暴露
+
+- `quality/clean.py`：`forward_adjust_close`（拆分后复权 split_forward / 供应商复权因子后复权 fund_adj_forward，D0 锚定）。
+- `store/warehouse.py`：`materialize_close_adj`（单快照物化进 close_adj 表）；`register_snapshot_views` 把 raw 表
+  （fund_adj/index_daily）也挂成零拷贝视图；`v_close_adj_latest` 绑定最新成功快照。
+- `store/snapshot_guard.py`：close_adj 列入 FACT_TABLES（裸读被拒），v_close_adj_latest 列入 SAFE_VIEWS。
+- `store/migrate.py`：SCHEMA_VERSION = 0003_close_adj。
+- 回归：`tests/test_close_adj.py`（拆分/复权因子两条口径、物化行数、视图单快照、raw 视图存在）。
+
+### 全量回归
+
+```powershell
+cd '<工作树>'
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:QUANT_ROOT = 'D:\project\quant'   # 让合成夹具读主检出已有快照（不在工作树 data/ 落数据）
+$env:PYTHONPATH = '<工作树>\src'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest discover -t . -s tests
+# → Ran 519 tests in 199.867s — OK（含既有 + 新增 test_close_adj.py 及 0a/0b/0c 回归，全绿，退出码 0）
+```
+
+### 交付：提交（未推送）
+
+```powershell
+git add -A
+git commit -m "feat(store): 阶段0数据契约——symbols/invest_type、bars_daily.amount、close_adj 复权层"
+# → [主线-数据流统一-sources接线-2 299761f] 18 files changed, 446 insertions(+), 26 deletions(-)
+```
+
+**结果**：commit `299761f` 已提交回分支 `主线-数据流统一-sources接线-2`；**未 push**（收口统一做）。
+
+**0b 补跑**：TUSHARE_TOKEN 就绪后补跑成功，snapshot `tushare_index-b170e23a8bad9cb7` 已落主检出 bronze，
+4 个报告所需指数齐全（见 0b 节验证）；补跑与留证随本 docs 提交一并落库，仍**未 push**。

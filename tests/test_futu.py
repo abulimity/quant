@@ -22,7 +22,7 @@ def _kline() -> pd.DataFrame:
         "high": [310.0, 312.0],
         "low": [298.0, 302.0],
         "volume": [100000.0, 120000.0],
-        "turnover": [0.0, 0.0],
+        "turnover": [30_500_000.0, 37_200_000.0],
         "k_type": ["K_DAY", "K_DAY"],
         "last_close": [0.0, 0.0],
         "pe_ratio": [0.0, 0.0],
@@ -71,6 +71,8 @@ class TestFutuNormalize(unittest.TestCase):
         self.assertEqual(str(out["close_utc"].iloc[0]), "2024-01-02 08:00:00")
         # available_utc = ts + 1 天 00:00
         self.assertEqual(str(out["available_utc"].iloc[0]), "2024-01-03 00:00:00")
+        # amount = turnover（成交额 HKD，未换算）
+        self.assertEqual(float(out["amount"].iloc[0]), 30_500_000.0)
 
     def test_unmapped_code_fails_closed(self):
         src = FutuSource(symbol_map={"99999.HK": 1})

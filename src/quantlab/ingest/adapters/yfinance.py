@@ -38,6 +38,7 @@ AVAILABILITY_NOTE = (
     "yfinance 日线无发布时间；按 F.6 采用保守滞后一日披露可用时间。"
     "复权口径：优先 Adj Close 并标记 total_return；仅有 Close 时标记 price_return，"
     "不得冒充总收益。"
+    "成交额 amount = 未复权 Close × Volume（免费接口无成交额，近似值，已披露）。"
 )
 
 
@@ -113,6 +114,10 @@ class YfinanceSource:
             close = pd.to_numeric(raw["Close"]).astype("float64")
             return_kind = RETURN_KIND_PRICE
 
+        vol = pd.to_numeric(
+            raw.get("Volume", pd.Series(0.0, index=raw.index))).astype("float64")
+        raw_close = pd.to_numeric(raw["Close"]).astype("float64")
+
         out = pd.DataFrame({
             "symbol_id": _util.map_symbols(raw[ticker_col], self.symbol_map, NAME),
             "ts": index.date,
@@ -120,8 +125,9 @@ class YfinanceSource:
             "high": pd.to_numeric(raw["High"]).astype("float64"),
             "low": pd.to_numeric(raw["Low"]).astype("float64"),
             "close": close,
-            "volume": pd.to_numeric(raw.get("Volume", pd.Series(0.0, index=raw.index)))
-            .astype("float64"),
+            "volume": vol,
+            # 成交额：yfinance 免费接口无成交额，用「未复权收盘 × 成交量」近似（披露口径）
+            "amount": raw_close * vol,
         })
         out["currency"] = currency
         # 免费接口不含精确收盘时刻 → 统一按保守滞后披露（F.6）

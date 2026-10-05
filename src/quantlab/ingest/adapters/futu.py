@@ -14,6 +14,7 @@ futu 抓取**不在 core**：futu-api SDK 只在 `envs/futu`，OpenD 需常驻�
     · close_utc = ts + 8h（XHKG 16:00 HKT = 08:00 UTC）。
     · available_utc = ts + 1 天 00:00（保守滞后，futu 日线无发布时刻）。
     · volume 单位 = 股（futu 原样；与 tushare A 股的「手」不同，勿混）。
+    · amount = turnover（成交额，HKD 原样，未换算）。
 """
 
 from __future__ import annotations
@@ -29,13 +30,14 @@ NAME = "futu"
 
 AVAILABILITY_NOTE = (
     "futu 日线无发布时刻；available_utc = 交易日 + 1 天 00:00（保守滞后）。"
-    "close_utc = ts + 8h（XHKG 16:00 HKT=08:00 UTC）。volume 单位 = 股（未换算）。"
+    "close_utc = ts + 8h（XHKG 16:00 HKT=08:00 UTC）。volume 单位 = 股（未换算）；"
+    "amount = turnover（成交额 HKD，未换算）。"
     "代码映射 HK.XXXXX → XXXXX.HK（tushare ts_code）。"
 )
 
 _CLOSE_UTC_OFFSET_HOURS = 8
 _AVAILABILITY_LAG_DAYS = 1
-_RAW_REQUIRED = ("code", "time_key", "open", "high", "low", "close", "volume")
+_RAW_REQUIRED = ("code", "time_key", "open", "high", "low", "close", "volume", "turnover")
 
 
 def futu_code_to_ticker(code: str) -> str:
@@ -92,7 +94,8 @@ class FutuSource:
             "high": pd.to_numeric(raw["high"]).astype("float64"),
             "low": pd.to_numeric(raw["low"]).astype("float64"),
             "close": pd.to_numeric(raw["close"]).astype("float64"),
-            "volume": pd.to_numeric(raw["volume"]).astype("float64"),  # 股，未换算
+            "volume": pd.to_numeric(raw["volume"]).astype("float64"),    # 股，未换算
+            "amount": pd.to_numeric(raw["turnover"]).astype("float64"),  # 成交额 HKD，未换算
         })
         out["currency"] = self.currency
         out["close_utc"] = _util.to_naive_utc(
