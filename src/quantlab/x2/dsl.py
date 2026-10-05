@@ -48,8 +48,11 @@ DSL_BINARY_OPS = frozenset({
     "and_", "or_",
 })
 DSL_UNARY_OPS = frozenset({"not_"})
+DSL_CROSS_SECTIONAL_OPS = frozenset({"rank", "cross_sectional_rank"})
+DSL_TERNARY_OPS = frozenset({"condition"})
 DSL_ALL_OPS = (DSL_FIELD_OPS | DSL_CONST_OPS | DSL_WINDOW_OPS
-               | DSL_SHIFT_OPS | DSL_BINARY_OPS | DSL_UNARY_OPS)
+               | DSL_SHIFT_OPS | DSL_BINARY_OPS | DSL_UNARY_OPS
+               | DSL_CROSS_SECTIONAL_OPS | DSL_TERNARY_OPS)
 
 # 价格字段：与 evaluate 一致，当前仅支持 close（复权收盘）。
 DSL_PRICE_FIELDS = frozenset({"close", "price"})
@@ -148,6 +151,19 @@ def _parse_unary(node: dict, op: str, where: str) -> Expr:
     return Expr(op, tuple(_child_args(node, op, where, 1)))
 
 
+def _parse_cross_sectional(node: dict, op: str, where: str) -> Expr:
+    """横截面排名：`(child, ascending=False)`。ascending 必须严格布尔（防 bool("false") 坑）。"""
+    child = tuple(_child_args(node, op, where, 1))[0]
+    ascending = node.get("ascending", False)
+    if not isinstance(ascending, bool):
+        raise DslParseError(f"{where}: {op}.ascending 必须是布尔值，得到 {ascending!r}")
+    return Expr(op, (child, ascending))
+
+
+def _parse_ternary(node: dict, op: str, where: str) -> Expr:
+    return Expr(op, tuple(_child_args(node, op, where, 3)))
+
+
 def parse_dsl_node(node: Any, *, where: str = "node") -> Expr:
     """把**一个** DSL 节点转成 `Expr`。任何结构违规都抛 `DslParseError`（fail-closed）。"""
     if not isinstance(node, dict):
@@ -170,6 +186,10 @@ def parse_dsl_node(node: Any, *, where: str = "node") -> Expr:
         return _parse_shift(node, op, where)
     if op in DSL_BINARY_OPS:
         return _parse_binary(node, op, where)
+    if op in DSL_CROSS_SECTIONAL_OPS:
+        return _parse_cross_sectional(node, op, where)
+    if op in DSL_TERNARY_OPS:
+        return _parse_ternary(node, op, where)
     return _parse_unary(node, op, where)
 
 
@@ -199,9 +219,9 @@ def _parse_lookback(value: Any, where: str) -> int:
     return max(numbers, default=0)
 
 
-def _infer_lookback(entry: Expr | None, exit_expr: Expr | None) -> int:
+def _infer_lookback(entry: Expr | None, exit_expr: Expr | None, ranking: Expr | None = None) -> int:
     from quantlab.contract.lint import _max_window
-    return max(1, max(_max_window(entry), _max_window(exit_expr)) * 2)
+    return max(1, max(_max_window(entry), _max_window(exit_expr), _max_window(ranking)) * 2)
 
 
 def dsl_to_spec(
@@ -231,10 +251,13 @@ def dsl_to_spec(
     exit_node = dsl.get("exit")
     exit_expr = parse_dsl_node(exit_node, where="exit") if exit_node else None
 
+    ranking_node = dsl.get("ranking")
+    ranking = parse_dsl_node(ranking_node, where="ranking") if ranking_node else None
+
     sizing = _parse_sizing(dsl.get("sizing"), where="sizing")
 
     raw_lookback = dsl.get("lookback")
-    lookback = _parse_lookback(raw_lookback, "lookback") or _infer_lookback(entry, exit_expr)
+    lookback = _parse_lookback(raw_lookback, "lookback") or _infer_lookback(entry, exit_expr, ranking)
     if raw_lookback not in (None, "") and _parse_lookback(raw_lookback, "lookback") == 0:
         notes.append(f"lookback={raw_lookback!r} 无法解析成数值 —— 改用表达式推断值 "
                      f"{lookback}（随后由闸门 G5 校验是否够用）")
@@ -251,6 +274,7 @@ def dsl_to_spec(
         universe=tuple(universe),
         entry=entry,
         exit=exit_expr,
+        ranking=ranking,
         sizing=sizing,
         costs=F8_SCENARIOS[10],            # **显式**取 F.8 情景（闸门 G7），非裸默认
         source_paper=source_paper,
@@ -277,6 +301,7 @@ DSL_SCHEMA = """\
   "universe_assets": ["<标的代码/名称>"],   // 论文未指定代码则用空数组 []
   "entry": <条件节点>,                        // 必填
   "exit": <条件节点 或 null>,                  // 无明确出场则 null
+  "ranking": <数值节点 或 null>,                // 横截面排序分数（越高越优）；纯轮动必填
   "sizing": {"top_n": <正整数, 默认 3>, "rebalance": "<pandas 周期别名, 默认 W-MON>"},
   "lookback": <正整数, 所需最少回看交易日数>,
   "needs_human_review": <true 若论文表述有歧义/拿不准, 否则 false>
@@ -301,6 +326,9 @@ DSL_SCHEMA = """\
   {"op": "and_", "args": [<节点>, <节点>]}               // 且
   {"op": "or_", "args": [<节点>, <节点>]}                // 或
   {"op": "not_", "args": [<节点>]}                       // 非
+  {"op": "rank", "args": [<节点>], "ascending": <bool, 默认 false>}  // 横截面排名（1=最大值）
+  {"op": "cross_sectional_rank", "args": [<节点>], "ascending": <bool, 默认 false>}  // 同 rank
+  {"op": "condition", "args": [<条件节点>, <节点>, <节点>]}  // 三元：pred 为真取左，否则取右
 
 关键规则：
   · 只使用上面列出的 op，不要造新算子、不要缩写、不要改名。
@@ -308,4 +336,9 @@ DSL_SCHEMA = """\
   · 「上穿 / 金叉」用 cross_above；「下穿 / 死叉」用 cross_below —— **不要**用 gt/lt 代替。
   · 表达式的每个叶子都必须是 {"op":"field","field":"close"}。
   · args 数组的元素是「节点对象」，不是字符串、不是函数调用式文本。
+  · rank/cross_sectional_rank/condition 的字段叶子仍需 shift ≥ 1（窗口算子会自动补 shift）。
+  · ranking 是「越高越优」的分数：对「越大越好」的因子用 rank/cross_sectional_rank 时取
+    ascending=true（rank 值随因子递增）；对「越小越好」的因子取 ascending=false（rank 1=最大值）。
+  · 纯横截面轮动没有时间性入场条件时，用 entry={"op":"const","value":1.0}（"始终合格"），
+    再用 ranking 表达排序分数；不要留空 entry（否则闸门 G9 拒绝，会静默全现金）。
 """

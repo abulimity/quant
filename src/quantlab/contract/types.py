@@ -208,6 +208,7 @@ class StrategySpec:
     timeframe: str = "1d"
     entry: Expr | None = None
     exit: Expr | None = None
+    ranking: Expr | None = None             # 横截面排名分数（数值，越高越优）；None = 回退动量
     sizing: SizingSpec = field(default_factory=SizingSpec)
     params: dict[str, float] = field(default_factory=dict)
     costs: CostModel = field(default_factory=CostModel)
@@ -224,6 +225,7 @@ class StrategySpec:
             "timeframe": self.timeframe,
             "entry": self.entry.to_dict() if self.entry else None,
             "exit": self.exit.to_dict() if self.exit else None,
+            "ranking": self.ranking.to_dict() if self.ranking else None,
             "sizing": self.sizing.to_dict(),
             "params": dict(self.params),
             "costs": self.costs.to_dict(),
@@ -241,6 +243,7 @@ class StrategySpec:
             timeframe=data.get("timeframe", "1d"),
             entry=Expr.from_dict(data["entry"]) if data.get("entry") else None,
             exit=Expr.from_dict(data["exit"]) if data.get("exit") else None,
+            ranking=Expr.from_dict(data["ranking"]) if data.get("ranking") else None,
             sizing=SizingSpec.from_dict(data.get("sizing", {})),
             params=dict(data.get("params", {})),
             costs=CostModel.from_dict(data.get("costs", {})),
@@ -362,5 +365,7 @@ def validate_spec(spec: StrategySpec) -> None:
         raise ContractViolation(f"lookback 不能为负，得到 {spec.lookback!r}")
     if len(set(spec.universe)) != len(spec.universe):
         raise ContractViolation(f"universe 含重复 symbol_id: {spec.universe}")
+    if spec.ranking is not None and not isinstance(spec.ranking, Expr):
+        raise ContractViolation(f"ranking 必须是 Expr，得到 {type(spec.ranking).__name__}")
     spec.costs.validate()
     spec.sizing.validate()
