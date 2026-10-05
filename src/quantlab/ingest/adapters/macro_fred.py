@@ -45,11 +45,11 @@ class FredSource:
         self.unit_map = dict(unit_map or {})
 
     def fetch(self, spec: FetchSpec) -> pd.DataFrame:
-        """**未实现**：需先配置供应商与 API key（`config/sources.yaml`，见附录 A）。"""
+        """**未实现**：需先配置供应商与 API key（`config/sources.toml`，见附录 A）。"""
         # 真实实现大致是：
         #     fred = import_module("fredapi")    # 或 requests 直连 FRED API
         #     raw = ...（API key 走环境变量，**不得**写入仓库）
-        raise tbd(NAME, f"dataset={spec.dataset} 需先配置 config/sources.yaml 与 API key")
+        raise tbd(NAME, f"dataset={spec.dataset} 需先配置 config/sources.toml 与 API key")
 
     def normalize(self, raw: pd.DataFrame) -> pd.DataFrame:
         """把 FRED 原始表映射到 `macro_series` 契约。"""

@@ -2421,3 +2421,55 @@ $env:PYTHONPATH='<worktree>\src'
 - [x] DSL：三算子 parse；ascending 非 bool/arity 错 → `DslParseError`；DSL 带 ranking → 自动 shift 的 `cross_sectional_rank(momentum(shift(close,1),63), True)` 且过闸门；白名单 `_SUPPORTED_OPS` ↔ `DSL_ALL_OPS` 同步
 
 ---
+
+## 数据流统一：sources 配置接线 + tushare/futu 规范化（2026-10-05）
+
+**目的**：`config/sources.yaml` 原是「孤儿配置」——计划（P0.3/附录 A/P2.4）定义它是换供应商的声明入口，
+却无任何代码读取它；三条数据路径各自为政（synthetic 硬编码、tushare 用 `if/elif` 绕过 `Source` 协议、
+futu 完全在体系外）。本步引入「配置 → 注册表 → 编排」接线，让 `sources` 配置名副其实，并把已接入的
+tushare/futu 统一进「fetch → normalize → bundle → `ingest_bundle`（原子/不可变/台账）」链路。
+
+**用户指令（verbatim）**：「设计出来，同时把已经接入的tushare和futu流程统一规范起来，使整个数据流程统一规范，满足当初设计目标。」
+**两项决策（用户拍板）**：① futu 只统一 normalize（抓取留在 `envs/futu`，SDK/OpenD/限额不纳入 core）；
+② 配置改名 `config/sources.toml`（标准库 `tomllib`，与 `config/llm.toml`、CLAUDE.md「配置用 TOML」一致）。
+
+**改动文件**：
+
+| 文件 | 变更 |
+| --- | --- |
+| `config/sources.toml`（新增；`config/sources.yaml` 已删） | 声明式源清单：synthetic/tushare/tushare_index/tushare_hk/tushare_macro/futu/us_etf/fx；凭据只写环境变量名 |
+| `src/quantlab/ingest/sources.py`（新增） | `SourceConfig`（frozen）+ `load_sources()`（tomllib）；文件缺失返回 `{}`；`token()` 只取不存 |
+| `src/quantlab/ingest/registry.py`（新增） | `SOURCE_REGISTRY`：source_id → builder/root/check/source_tag（标签与既有快照逐字一致） |
+| `src/quantlab/ingest/adapters/futu.py`（新增） | `FutuSource.normalize`（raw bronze → `bars_daily` 契约，离线、不 import futu SDK） |
+| `src/quantlab/ingest/realdata.py` | `build_futu_bundle` + XHKG symbol_id 预留块（base=1_000_000_000） |
+| `src/quantlab/ingest/orchestrator.py` | 替换硬编码分发：resolve → enabled 检查 → token → builder → `ingest_bundle` |
+| `src/quantlab/cli.py` | `--source` help 指向 `config/sources.toml` |
+| `tests/test_sources.py` / `test_registry.py` / `test_futu.py`（新增） | 配置解析 / 注册表分发 / futu normalize 单测（离线） |
+| `LOCAL_DEPLOYMENT_PLAN.md` / `docs/deploy/HANDOFF.md` / `HANDOFF_MANUAL.md` | `sources.yaml` → `sources.toml`；附录 A 模板重写为 TOML 接线 |
+
+**验证命令与输出**（主检出 core venv；跑前清 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV`）：
+
+```powershell
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:PYTHONIOENCODING='utf-8'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest tests.test_sources tests.test_registry tests.test_futu -v
+# → Ran 17 tests in 0.563s — OK
+```
+
+```powershell
+& 'D:\project\quant\.venv\Scripts\python.exe' -m unittest discover -t . -s tests
+# → Ran 508 tests in 325.068s — OK（含既有 P2–P14 + 新增 17，全绿，退出码 0）
+```
+
+**关键不变量（已守住，含回归锁定）**：
+- `source` 标签逐字不变（`synthetic`/`tushare`/`tushare_index`/`tushare_hk`/`tushare_macro`），新源 `futu`
+  用新标签，天然不与既有快照 ID 冲突；`v_bars_latest` 不受影响。`test_registry.py::test_source_tags_are_stable`
+  把标签 ↔ `RegisteredSource.source_tag` 锁死，防迁移回归。
+- synthetic 豁免配置：`--source synthetic` 即使 `sources.toml` 缺失/为空仍可用（CLAUDE.md 约定 3）；全量回归里
+  `test_p2_5_ingest` 的 CLI 合成 ingest 仍产出 `snapshot_id`（末尾 JSON `synth-v1-613c5986a898`、`already_present:false`）证明路径未变。
+- 凭据只存环境变量名（`credentials_env`），值绝不落盘；`test_sources.py::test_token_reads_env_only` 锁「只取不存」。
+- symbol_id 命名空间：XHKG 用 `1_000_000_000 + N` 预留块，避免与 cn_etf 的 `1..N` 主键冲突
+  （`test_futu.py` 离线断言 `00700.HK → 1_000_000_002`）。
+
+**不在本次范围**：`quantlab run` 切真实 tushare 数据、futu `rehab.parquet` → `corporate_actions`、
+us/fx 与 akshare/yfinance/fred 的真实实现、4 个 `tushare*` 合并成单 provider、全量回填重跑。

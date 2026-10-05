@@ -76,11 +76,11 @@ class YfinanceSource:
         self.kind = kind          # None = 自动判定
 
     def fetch(self, spec: FetchSpec) -> pd.DataFrame:
-        """**未实现**：需先配置供应商（`config/sources.yaml`，见附录 A）。"""
+        """**未实现**：需先配置供应商（`config/sources.toml`，见附录 A）。"""
         # 真实实现大致是：
         #     yf = import_module("yfinance")     # 按名导入，规避与本模块同名
         #     raw = yf.download(spec.symbols, start=..., end=..., auto_adjust=False)
-        raise tbd(NAME, f"dataset={spec.dataset} 需先配置 config/sources.yaml")
+        raise tbd(NAME, f"dataset={spec.dataset} 需先配置 config/sources.toml")
 
     def normalize(self, raw: pd.DataFrame, *, currency: str = "USD",
                   base: str = "", quote: str = "") -> pd.DataFrame:

@@ -18,13 +18,18 @@ from __future__ import annotations
 
 import hashlib
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 
 from quantlab.fixtures.synth import FixtureBundle
+from quantlab.ingest.adapters import _util
+from quantlab.ingest.adapters.futu import FutuSource
 from quantlab.ingest.adapters.tushare import TushareSource, assign_symbol_ids
-from quantlab.ingest.base import ContractError, FetchSpec
+from quantlab.ingest.base import ContractError, FetchSpec, validate_normalized
+from quantlab.paths import DATA_ROOT
 from quantlab.store.canonical import content_hash
+from quantlab.store.db import WarehouseNotFoundError, connect, warehouse_path
 
 # 求 snapshot_id 用的「未打标」排序键（不含 snapshot_id / downloaded_at）
 _PREID_KEYS: dict[str, list[str]] = {
@@ -272,6 +277,140 @@ def build_tushare_macro_bundle(
             "availability_note": (
                 "宏观 available_utc = 观测期末 + 发布滞后（CPI/PPI 15d、GDP 30d、"
                 "shibor 1d，F.2 保守口径）。"),
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
+# futu：原始 bronze → 契约（normalize-only，抓取在 envs/futu）
+# --------------------------------------------------------------------------- #
+# symbol_id 命名空间约定（schema.sql:36 的 symbol_id 是全局主键 + bars_daily FK）：
+#   cn_etf 已用 1..N；港股若也从 1 起会与之主键冲突。故每个 exchange 预留一个块：
+#   XHKG 用 base=1_000_000_000（symbol_id = base + rank）。后续 us_etf（XNYS）再分一块。
+_XHKG_SYMBOL_ID_BASE = 1_000_000_000
+
+_FUTU_RAW_BRONZE_ROOT = DATA_ROOT / "bronze" / "futu" / "history_kline"
+
+
+def _assign_hk_symbol_ids(hk_symbols: pd.DataFrame) -> dict[str, int]:
+    """港股永久 ID：XHKG 预留块基数 + 按 ts_code 排序的名次（确定性、不撞 cn_etf）。"""
+    return {
+        code: _XHKG_SYMBOL_ID_BASE + i + 1
+        for i, code in enumerate(sorted(hk_symbols["ts_code"].astype(str)))
+    }
+
+
+def _hk_symbols_to_contract(
+    hk_symbols: pd.DataFrame, symbol_map: dict[str, int]
+) -> pd.DataFrame:
+    """tushare hk_basic（已 normalize 的 hk_symbols）→ 契约 symbols 表（XHKG）。"""
+    _util.require_columns(hk_symbols, ("ts_code", "curr_type"), "futu")
+    df = hk_symbols.copy()
+    out = pd.DataFrame({
+        "symbol_id": [symbol_map[str(c)] for c in df["ts_code"]],
+        "ticker": df["ts_code"].astype(str),
+        "exchange": "XHKG",
+        "calendar": "XHKG",
+        "currency": df["curr_type"].astype(str),
+        "isin": df["isin"].astype(str) if "isin" in df.columns else None,
+        "lot_size": (pd.to_numeric(df["trade_unit"], errors="coerce").astype("float64")
+                     if "trade_unit" in df.columns else None),
+        "listed_on": df["list_date"].tolist() if "list_date" in df.columns else None,
+        "delisted_on": df["delist_date"].tolist() if "delist_date" in df.columns else None,
+    })
+    validate_normalized(out, "symbols")
+    return out
+
+
+def _locate_latest_hk_symbols(warehouse: str | Path | None = None) -> pd.DataFrame | None:
+    """从台账找最近一次成功 ingest 的 hk_symbols 快照并读回；无则 None。"""
+    try:
+        con = connect(read_only=True, path=warehouse_path(warehouse))
+    except WarehouseNotFoundError:
+        return None
+    try:
+        row = con.execute(
+            "SELECT snapshot_id FROM ingest_runs "
+            "WHERE dataset = 'hk_symbols' AND status = 'ok' "
+            "ORDER BY finished_at DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        return None
+    path = DATA_ROOT / "bronze" / "tushare" / row[0] / "hk_symbols.parquet"
+    if not path.is_file():
+        return None
+    return pd.read_parquet(path)
+
+
+def _locate_latest_futu_bronze(
+    raw_bronze_root: str | Path | None = None,
+) -> Path | None:
+    """最新原始 bronze 目录（目录名 = UTC 时间戳，字典序 = 时间序）。"""
+    root = Path(raw_bronze_root) if raw_bronze_root is not None else _FUTU_RAW_BRONZE_ROOT
+    if not root.is_dir():
+        return None
+    candidates = [
+        d for d in root.iterdir()
+        if d.is_dir() and (d / "kline.parquet").is_file()
+    ]
+    return max(candidates, key=lambda p: p.name) if candidates else None
+
+
+def build_futu_bundle(
+    *,
+    start: date,
+    end: date,
+    symbols: tuple[str, ...] | None = None,
+    hk_symbols: pd.DataFrame | None = None,
+    raw_bronze_dir: str | Path | None = None,
+    warehouse: str | Path | None = None,
+) -> FixtureBundle:
+    """把 futu 原始 bronze normalize 成契约 bars_daily + HK symbols，打包成可落快照的 bundle。
+
+    `hk_symbols` / `raw_bronze_dir` 缺省时自动定位（前者走台账、后者按时间戳取最新原始
+    bronze）；定位不到即 fail-closed（不静默产出空快照）。测试可注入内联合成帧离线跑。
+    """
+    if hk_symbols is None:
+        hk_symbols = _locate_latest_hk_symbols(warehouse)
+    if hk_symbols is None or len(hk_symbols) == 0:
+        raise ContractError(
+            "futu: 找不到 tushare_hk 的 hk_symbols（先跑 `quantlab ingest --source tushare_hk`）")
+
+    symbol_map = _assign_hk_symbol_ids(hk_symbols)
+    symbols_frame = _hk_symbols_to_contract(hk_symbols, symbol_map)
+
+    raw_dir = (
+        Path(raw_bronze_dir) if raw_bronze_dir is not None else _locate_latest_futu_bronze()
+    )
+    if raw_dir is None or not (raw_dir / "kline.parquet").is_file():
+        raise ContractError(
+            "futu: 找不到原始 bronze（先跑 envs/futu/fetch_history_kline.py 抓取）")
+
+    futu = FutuSource(symbol_map=symbol_map, currency="HKD", raw_bronze_dir=raw_dir)
+    raw_kline = futu.fetch()
+    if symbols:
+        requested = set(symbols)
+        missing = sorted(requested - set(raw_kline["code"].astype(str)))
+        if missing:
+            raise ContractError(f"futu: 指定标的在原始 bronze 中无数据: {missing}")
+        raw_kline = raw_kline[raw_kline["code"].astype(str).isin(requested)]
+    bars = futu.normalize(raw_kline)
+
+    # 裁剪到研究窗口（契约窗口纪律，与 tushare 一致）
+    if len(bars):
+        bars = bars[(bars["ts"] >= start) & (bars["ts"] <= end)].reset_index(drop=True)
+
+    return _assemble_bundle(
+        "futu",
+        {"symbols": symbols_frame, "bars_daily": bars},
+        {"bars_daily": ("source", "downloaded_at", "snapshot_id")},
+        {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "availability_note": FutuSource.availability_note,
+            "symbol_id_namespace": {"exchange": "XHKG", "base": _XHKG_SYMBOL_ID_BASE},
         },
     )
 

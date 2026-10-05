@@ -10,7 +10,8 @@
 
 **P5.6 全链路六段 + P6 组合与报告 已完成且验证：一条命令「夹具数据 + golden DSL → 三引擎（vbt 粗筛→backtrader 精验→bt 组合）→ reference 对账 → 组合 → 报告」跑通并落 `runs/<run_id>/`，可复现（V4 两次同输入指标一致）；P6 三缺块（portfolio/eval/registry + `quantlab run` CLI）补齐，458 测试全绿。主线（P5.6/P6 + #14）已全部落地：#14 横截面算子族（`rank`/`cross_sectional_rank`/`condition` + `StrategySpec.ranking`，33 测试全绿）由其他 agent 实现并合并进 main（PR #4/#5，见 §7.13）；§7.2 仅剩非阻塞待办（长路径管理员 / 数据供应商配置 / P7 等）。**
 **数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2026-09-30，272.4 万根 bar）并完成对账修复；剩余数据集（复权因子 `fund_adj`、基准指数 `index`、港股名单 `hk_basic`、宏观最小集）已接入并全部回填，时间范围扩展到最新交易日 2026-09-30（最新快照 `tushare-f4f7c81a15b5779c`）；数据并入主项目 `D:\project\quant\data`。**
-（更新时间：2026-10-05；P5 全过程见 §7.7，口径重估见 §7.6，tushare 回填见 §7.8，剩余数据集见 §7.9，能力域内 E2E 落地见 §7.10，全链路六段 + P6 落地见 §7.12）
+**数据流统一（2026-10-05）：`config/sources.toml`（原 `sources.yaml`）接线落地——`load_sources()` → `SOURCE_REGISTRY` → `orchestrator.ingest()` 三层打通，synthetic / tushare 四条 / futu 统一进「fetch → normalize → bundle → ingest_bundle」链路；新增 `FutuSource.normalize` 把 futu 原始 bronze 归一化到 `bars_daily`（XHKG symbol_id 预留块 1e9）。508 测试全绿。**
+（更新时间：2026-10-05；P5 全过程见 §7.7，口径重估见 §7.6，tushare 回填见 §7.8，剩余数据集见 §7.9，能力域内 E2E 落地见 §7.10，全链路六段 + P6 落地见 §7.12，数据流统一见 §7.14）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
 
 > ✅ **已解除**：`bt` 多标的换仓的 **3.6% 偏差** = **停牌顺延缺口**（bt 无「交易日掩码」，
@@ -57,7 +58,7 @@
 | D 盘剩余 | ≈ 275 GiB ✅ |
 | **管理员权限** | **无** —— 需要管理员的操作会失败，须记录为 `SKIPPED(no admin)` 并交人工 |
 | 长路径 | `LongPathsEnabled=0`，**已人工豁免**（`GateP0.long_paths=WAIVED`） |
-| 数据供应商 | **cn_etf = tushare 全量回填**（2861 只）；**macro/index = tushare 回填**；**hk = 名单（tushare_hk）+ 行情 bronze（futu，未 normalize）**；us/fx 仍留空；其余用合成夹具 |
+| 数据供应商 | **cn_etf = tushare 全量回填**（2861 只）；**macro/index = tushare 回填**；**hk = 名单（tushare_hk）+ 行情（futu，已 normalize 接线，`enabled=false` 待原始 bronze + 名单就绪）**；us/fx 仍留空；其余用合成夹具 |
 | 网络 | 未验证数据接口可用性；**`raw.githubusercontent.com` 在本机不可达**（litellm 成本表拉取超时） |
 | **环境边界**（P1 定） | core（根）/ `envs/vbt` / `envs/x2`，**各自独立 `uv.lock`**；**backtrader 归 core**，未建 `envs/btrader` |
 | **打包**（P2 定） | 根项目改为 **`uv_build` 可编辑安装**（`[build-system]` + `module-root="src"`），故 `import quantlab` 可用；CLI 入口 `quantlab = quantlab.cli:main`。`uv.lock` 仅 1 行变化，**依赖零漂移** |
@@ -93,7 +94,7 @@
 
 - ✅ P0.1 系统与工具核查 —— 除长路径外全部通过
 - ✅ P0.2 目录骨架（`config / data / docs / runs / src / tests` + `data\{bronze,silver,gold}`）、`EVIDENCE.md` 建立
-- ✅ P0.3 `config/sources.yaml`（空模板，无明文密钥）、`.gitignore`
+- ✅ P0.3 `config/sources.toml`（声明式模板，无明文密钥）、`.gitignore`
 - ⚠️ 长路径 **人工豁免**；Defender 排除 `SKIPPED(no admin)`
 - 🚦 **Gate P0 通过（含 1 项显式豁免）**
 
@@ -190,7 +191,7 @@
 | # | 事项 | 影响 | 何时处理 |
 | --- | --- | --- | --- |
 | 1 | 长路径 + Defender 排除（需**管理员**） | 非阻塞 | 可延后 |
-| 2 | **数据供应商配置** `config/sources.yaml` | 填了才能把「合成夹具验证」换成真实数据 | 等你 |
+| 2 | **数据供应商配置** `config/sources.toml` | 接线已落地；补 provider 实现即可换成真实数据 | 等你 |
 | 4 | P7 定时任务是否启用 | 默认**不启用**，启用属范围变更 | 等你确认 |
 | 12 | §P4.5 场景 C 原文含**汇率**，三个 runner 均不建模（`fx_cost_bps≠0` 直接报错） | 场景 C 尚不完整 | 建议 P6 补 |
 | 9 | 质量阈值 `JUMP_SIGMA=8` / `JUMP_FLOOR=0.15` / `FX_STALE_DAYS=10` | 首次设定，**未用真实数据校准** | 接入供应商后重标定 |
@@ -608,6 +609,45 @@ bt 无法表达逐标的停牌顺延（`halt_deferral_unsupported`，E2E-A 早�
   lint 三规则 / 发射 parity（手写未 shift 动量 == 兜底）/ top-3 选择 / 未来扰动 / DSL parse / 白名单同步。
 - 全量 `unittest discover` 绿（含 `test_p3_contract`、`test_p5_spec2weights`、`test_p5_dsl`、
   `test_p5_paper2spec`、`test_p5_ma_cross_e2e`）。证据见 EVIDENCE.md §P14。
+
+---
+
+## 7.14 数据流统一：sources 配置接线 + tushare/futu 规范化（2026-10-05）
+
+**目标**：`config/sources.yaml` 原是「孤儿配置」——计划定义它是换供应商的声明入口，却无代码读取；
+三条数据路径各自为政（synthetic 硬编码、tushare 用 `if/elif` 绕过 `Source` 协议、futu 完全在体系外）。
+本步引入「配置 → 注册表 → 编排」接线，并把已接入的 tushare/futu 统一进「fetch → normalize → bundle →
+`ingest_bundle`（原子/不可变/台账）」链路。
+
+### 三层接线（新增/改造）
+
+| 层 | 文件 | 职责 |
+| --- | --- | --- |
+| 声明 | `config/sources.toml`（新，取代 `sources.yaml`） | `load_sources()` 用 tomllib 读；key=source 标签（不改名）；凭据只写环境变量名 |
+| 接线 | `src/quantlab/ingest/registry.py`（新） | `SOURCE_REGISTRY`：source_id → builder/root/check/source_tag（标签与既有快照逐字一致） |
+| 编排 | `src/quantlab/ingest/orchestrator.py`（改） | 删硬编码 `if/elif`；resolve → enabled 检查 → token → builder → `ingest_bundle`；synthetic 豁免配置 |
+
+### futu 纳入统一链路（只 normalize，抓取仍留 envs/futu）
+
+- `src/quantlab/ingest/adapters/futu.py`（新）：`FutuSource.normalize` 原始 bronze → `bars_daily`
+  （`HK.00700`→`00700.HK`→symbol_id；HKD；`close_utc=ts+8h`；`available_utc=ts+1d`），离线、不 import SDK。
+- `src/quantlab/ingest/realdata.py`（改）：`build_futu_bundle` + XHKG symbol_id 预留块
+  `base=1_000_000_000`（避开 cn_etf 的 `1..N` 主键冲突）。
+
+### 关键不变量（守住）
+
+- `source` 标签逐字不变；新源 `futu` 用新标签，`v_bars_latest` 不受影响。`test_registry::test_source_tags_are_stable` 锁死。
+- synthetic 豁免配置（CLAUDE.md 约定 3）；凭据只存环境变量名（`test_sources::test_token_reads_env_only`）。
+
+### 验证
+
+- 新增 `tests/test_{sources,registry,futu}.py` 17 测试；全量 `unittest discover` **508 tests OK**（exit 0）。
+- 证据见 EVIDENCE.md 末节「数据流统一：sources 配置接线 + tushare/futu 规范化」。
+
+### 不在本次范围
+
+`quantlab run` 切真实 tushare、futu `rehab.parquet`→corporate_actions、us/fx 与 akshare/yfinance/fred
+真实实现、4 个 tushare* 合并、全量回填重跑。
 
 ---
 

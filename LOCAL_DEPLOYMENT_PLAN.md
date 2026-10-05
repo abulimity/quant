@@ -182,7 +182,7 @@ D:\project\quant\
     x2\   { pyproject.toml, uv.lock, probe.py, entry.py }
   config\
     settings.toml        # 路径、内存、线程、日志
-    sources.yaml         # 供应商配置（本次留空，见附录 A）
+    sources.toml         # 供应商配置（声明式；接线见附录 A）
     engines.yaml         # 各引擎默认参数
   src\quantlab\
     fixtures\            # 合成夹具生成与校验
@@ -259,7 +259,7 @@ Add-MpPreference -ExclusionPath 'D:\project\quant\data'
 - **目的**：先把"配置从哪来"定好，避免后续把密钥写进代码。
 - **执行**：
 
-1. 创建 `config/sources.yaml`，内容为**空模板**（结构见附录 A）。
+1. 创建 `config/sources.toml`，内容为**声明式模板**（结构见附录 A；凭据只写环境变量名）。
 2. 约定所有凭据通过**环境变量**读取，不落盘到仓库。
 3. 创建 `.gitignore`，至少包含：
 
@@ -275,9 +275,9 @@ runs/
 *.key
 ```
 
-- **产出**：`config/sources.yaml`（空模板）、`.gitignore`。
+- **产出**：`config/sources.toml`（声明式模板，无明文密钥）、`.gitignore`。
 - **验证**：
-  - [ ] **V0** `sources.yaml` 中不存在任何真实 key，仅占位符
+  - [ ] **V0** `sources.toml` 中不存在任何真实 key，仅占位符
   - [ ] **V0** `.gitignore` 覆盖 `.venv/`、`data/`、`runs/`、`.env`
   - [ ] **V1** `git check-ignore -v .env` 有命中（初始化 git 后执行）
 - **失败处理**：无。
@@ -1016,52 +1016,77 @@ CREATE TABLE run_metrics(
 
 ---
 
-## 附录 A · 供应商接入手册（**留空，由你后续填写**）
+## 附录 A · 供应商接入手册（**接线已落地，provider 实现按需补**）
 
-`config/sources.yaml` 模板：
+`config/sources.toml` 是「声明」入口：`load_sources()`（`ingest/sources.py`，tomllib）读取，经
+`SOURCE_REGISTRY`（`ingest/registry.py`）接到真实 builder，编排器 `orchestrator.ingest()` 自动分发。
+**加一个数据源 = 加一段声明 + 一个 adapter（`fetch`/`normalize`）+ 一条 registry 条目**，其余链路复用。
+完整版即 `config/sources.toml`，模板如下：
 
-```yaml
-# 本次留空。接入时逐项填写，填写后需为每个源补一组 P2.4 的 normalize 契约测试。
-sources:
-  cn_etf:
-    provider: ""          # 例：akshare
-    enabled: false
-    datasets: [daily_bars, corporate_actions]
-    credentials_env: ""   # 环境变量名，不写明文
-    calendar: XSHG
-    notes: ""
-  hk_etf:
-    provider: ""          # 例：yfinance
-    enabled: false
-    datasets: [daily_bars]
-    credentials_env: ""
-    calendar: XHKG
-    notes: ""
-  us_etf:
-    provider: ""          # 例：yfinance
-    enabled: false
-    datasets: [daily_bars, corporate_actions]
-    credentials_env: ""
-    calendar: XNYS
-    notes: ""
-  fx:
-    provider: ""
-    enabled: false
-    datasets: [daily_fx]
-    credentials_env: ""
-    notes: "内部统一：1 单位原币 = 多少基准货币；支持多基准并存，默认 CNY"
-  macro:
-    provider: ""          # 例：fred
-    enabled: false
-    datasets: [macro_series]
-    credentials_env: ""
-    notes: ""
-  llm:
-    provider: ""          # 例：openai / anthropic / ollama
-    enabled: false
-    credentials_env: ""
-    notes: "本地 ollama 可不需凭据"
+```toml
+# key = source 标签（烘焙进 snapshot_id / bars_daily.source / ingest_runs.source，不得改名）
+# provider = 适配器/供应商标识（文档用，不参与快照 ID 派生）
+# credentials_env = 环境变量**名**（绝不写 key 值；见 CLAUDE.md「凭据走环境变量」）
+# enabled = false 表示「已声明、未启用」：ingest 时明确报错，不静默跳过
+
+[sources.synthetic]
+provider = "synthetic"
+enabled = true
+datasets = ["symbols", "bars_daily", "corporate_actions", "fx_rates", "trading_calendar", "macro_series", "fundamentals"]
+
+[sources.tushare]
+provider = "tushare"
+enabled = true
+datasets = ["symbols", "bars_daily", "corporate_actions", "fund_adj"]
+credentials_env = "TUSHARE_TOKEN"
+calendar = "XSHG"
+
+[sources.tushare_index]
+provider = "tushare"
+enabled = true
+datasets = ["index_symbols", "index_daily"]
+credentials_env = "TUSHARE_TOKEN"
+
+[sources.tushare_hk]
+provider = "tushare"
+enabled = true
+datasets = ["hk_symbols"]
+credentials_env = "TUSHARE_TOKEN"
+calendar = "XHKG"
+
+[sources.tushare_macro]
+provider = "tushare"
+enabled = true
+datasets = ["macro_series"]
+credentials_env = "TUSHARE_TOKEN"
+
+[sources.futu]
+provider = "futu"
+enabled = false
+datasets = ["bars_daily"]
+credentials_env = ""
+calendar = "XHKG"
+currency = "HKD"
+notes = "normalize-only：抓取在 envs/futu，core 只 normalize 原始 bronze"
+
+[sources.us_etf]
+provider = ""
+enabled = false
+datasets = ["bars_daily", "corporate_actions"]
+credentials_env = ""
+calendar = "XNYS"
+
+[sources.fx]
+provider = ""
+enabled = false
+datasets = ["fx_rates"]
+credentials_env = ""
 ```
+
+**数据集词汇**（与 `ingest/base.py` 的 `CONTRACT` 键一致）：`bars_daily` / `corporate_actions` /
+`fx_rates` / `macro_series` / `symbols`；非契约 raw 表用 `fund_adj` / `index_symbols` / `index_daily` /
+`hk_symbols`。**symbol_id 命名空间**（`schema.sql` 中 `symbol_id` 是全局主键）：每个 exchange 一个预留块，
+cn_etf 用 `1..N`、XHKG 用 `1_000_000_000 + N`（`realdata.build_futu_bundle`），后续 us_etf（XNYS）再分一块。
 
 **接入任一供应商后的强制动作**（缺一不可）：
 

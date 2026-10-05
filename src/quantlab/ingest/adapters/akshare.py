@@ -54,12 +54,12 @@ class AkshareSource:
         self.currency = currency
 
     def fetch(self, spec: FetchSpec) -> pd.DataFrame:
-        """**未实现**：需先配置供应商（`config/sources.yaml`，见附录 A）。"""
+        """**未实现**：需先配置供应商（`config/sources.toml`，见附录 A）。"""
         # 真实实现大致是：
         #     ak = import_module("akshare")     # 延迟导入，故顶层不会 ImportError
         #     raw = ak.fund_etf_hist_em(symbol=..., period="daily", ...)
         # 这里刻意不写死 —— 给出「看起来能用」的假实现比不写更危险。
-        raise tbd(NAME, f"dataset={spec.dataset} 需先配置 config/sources.yaml")
+        raise tbd(NAME, f"dataset={spec.dataset} 需先配置 config/sources.toml")
 
     def normalize(self, raw: pd.DataFrame) -> pd.DataFrame:
         """把 AKShare 原始表映射到 `bars_daily` 契约。"""

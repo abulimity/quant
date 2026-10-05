@@ -30,24 +30,17 @@ import pandas as pd
 from quantlab.fixtures.synth import (
     FixtureBundle,
     check_invariants,
-    generate,
     snapshot_dir,
     write_snapshot,
 )
-from quantlab.ingest.realdata import (
-    build_tushare_bundle,
-    build_tushare_hk_bundle,
-    build_tushare_index_bundle,
-    build_tushare_macro_bundle,
-    check_real_invariants,
-)
 from quantlab.fixtures.spec import STUDY_START, STUDY_END
+from quantlab.ingest.registry import SOURCE_REGISTRY
+from quantlab.ingest.sources import load_sources
 from quantlab.paths import DATA_ROOT
 from quantlab.store.db import connect, warehouse_path
 from quantlab.store.migrate import apply_migrations
 
 DEFAULT_ROOT = DATA_ROOT / "bronze" / "synthetic"
-TUSHARE_ROOT = DATA_ROOT / "bronze" / "tushare"
 
 # 这些数据集参与 watermark（数据边界）计算
 _WATERMARK_TABLES = ("bars_daily", "fx_rates", "macro_series")
@@ -229,35 +222,44 @@ def ingest(
     end: date | None = None,
     symbols: tuple[str, ...] | None = None,
 ) -> IngestResult:
-    """按 `--source` 分发到合成夹具或真实供应商。"""
+    """按 `--source` 经「配置 + 注册表」分发（附录 A 三层接线）。
+
+    synthetic 豁免配置与 enabled 检查（CLAUDE.md 约定 3：供应商留空时用合成夹具）。
+    """
     if source == "synthetic":
         if universe not in ("fixture", "synthetic"):
             raise IngestError(f"未知 universe={universe!r}；当前仅支持 'fixture'。")
-        return ingest_bundle(generate(), root, warehouse=warehouse, source=source, con=con)
+        return _dispatch(SOURCE_REGISTRY["synthetic"], root=root, warehouse=warehouse,
+                         con=con, start=start, end=end, symbols=symbols, token=None)
 
-    if source in ("tushare", "tushare_index", "tushare_hk", "tushare_macro"):
-        tushare_root = Path(root) if root is not None else TUSHARE_ROOT
-        start_d = start or STUDY_START
-        end_d = end or STUDY_END
-        if source == "tushare":
-            bundle = build_tushare_bundle(
-                start=start_d, end=end_d, symbols=symbols,
-            )
-        elif source == "tushare_index":
-            bundle = build_tushare_index_bundle(start=start_d, end=end_d)
-        elif source == "tushare_hk":
-            bundle = build_tushare_hk_bundle()
-        else:  # tushare_macro
-            bundle = build_tushare_macro_bundle(start=start_d, end=end_d)
-        return ingest_bundle(
-            bundle, tushare_root, warehouse=warehouse, source=source, con=con,
-            check=check_real_invariants,
-        )
+    cfg = load_sources().get(source)
+    if cfg is None:
+        raise IngestError(
+            f"数据源 {source!r} 未在 config/sources.toml 注册。\n"
+            f"处置：在 config/sources.toml 的 [sources.{source}] 节声明它；"
+            f"接入新供应商见 LOCAL_DEPLOYMENT_PLAN.md 附录 A。")
+    if not cfg.enabled:
+        raise IngestError(
+            f"数据源 {source!r} 已声明但 enabled=false。\n"
+            f"处置：在 config/sources.toml 将其 enabled 置为 true 后重试。")
+    reg = SOURCE_REGISTRY.get(source)
+    if reg is None:
+        raise IngestError(
+            f"数据源 {source!r} 已声明但尚无实现（适配器/注册表未接入）。\n"
+            f"处置：实现 adapter 并登记到 ingest/registry.py（附录 A）。")
+    return _dispatch(reg, root=root, warehouse=warehouse, con=con,
+                     start=start, end=end, symbols=symbols, token=cfg.token())
 
-    raise IngestError(
-        f"数据源 {source!r} 尚未接入（VENDOR-TBD）。\n"
-        f"当前可用：source='synthetic'（合成夹具）、source='tushare'（境内 ETF）、"
-        f"source='tushare_index'（基准指数）、source='tushare_hk'（港股名单）、"
-        f"source='tushare_macro'（宏观最小集）。\n"
-        f"接入其它供应商见 LOCAL_DEPLOYMENT_PLAN.md 附录 A。"
+
+def _dispatch(reg, *, root, warehouse, con, start, end, symbols, token) -> IngestResult:
+    """统一收尾：解析窗口 → 调 builder → 落快照（source_tag/root/check 取自注册表）。"""
+    bundle = reg.builder(
+        start=start or STUDY_START,
+        end=end or STUDY_END,
+        symbols=symbols,
+        token=token,
+    )
+    return ingest_bundle(
+        bundle, root or reg.root, warehouse=warehouse, source=reg.source_tag,
+        con=con, check=reg.check,
     )

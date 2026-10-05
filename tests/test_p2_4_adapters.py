@@ -143,7 +143,7 @@ class TestUnimplementedEntrancesFailClosed(unittest.TestCase):
         with self.assertRaises(NotImplementedError) as ctx:
             AkshareSource().fetch(_spec())
         message = str(ctx.exception)
-        self.assertIn("sources.yaml", message)
+        self.assertIn("sources.toml", message)
         self.assertIn("不得返回空表或静默成功", message)
 
 

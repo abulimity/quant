@@ -123,7 +123,7 @@ def tbd(source_name: str, detail: str = "") -> NotImplementedError:
     extra = f"（{detail}）" if detail else ""
     return NotImplementedError(
         f"{VENDOR_TBD}: 数据源 '{source_name}' 的抓取尚未实现{extra}。\n"
-        f"处置：在 config/sources.yaml 配置该供应商后，实现 fetch() 并补一组 "
+        f"处置：在 config/sources.toml 配置该供应商后，实现 fetch() 并补一组 "
         f"normalize() 契约测试（LOCAL_DEPLOYMENT_PLAN.md 附录 A）。\n"
         f"注意：不得返回空表或静默成功。"
     )

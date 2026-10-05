@@ -1,0 +1,71 @@
+# 数据源声明（LOCAL_DEPLOYMENT_PLAN.md 附录 A）—— 接线层的「声明」入口。
+#
+# 读法：`quantlab.ingest.sources.load_sources()` 用标准库 tomllib 解析本文件，
+#       经 `SOURCE_REGISTRY`（ingest/registry.py）接到真实 builder。
+#   · key = source 标签（烘焙进 snapshot_id / bars_daily.source / ingest_runs.source，
+#     不得改名 —— 改了会换快照 ID、v_bars_latest 漂移）。
+#   · provider = 适配器/供应商标识（文档用，不参与快照 ID 派生）。
+#   · credentials_env = 环境变量**名**（绝不写 key 值；见 CLAUDE.md「凭据走环境变量」）。
+#   · enabled = false 表示「已声明、未启用」：ingest 时会明确报错，不静默跳过。
+#
+# 数据集词汇与 `ingest/base.py` 的 CONTRACT 键一致：
+#   bars_daily / corporate_actions / fx_rates / macro_series / symbols
+#   非契约 raw 表：fund_adj / index_symbols / index_daily / hk_symbols
+#
+# symbol_id 命名空间约定（schema.sql:36 symbol_id 是全局主键）：
+#   每个 exchange 一个预留块，避免不同源的主键冲突。
+#   cn_etf 用 1..N；XHKG 用 1_000_000_000 + N（见 realdata.build_futu_bundle）。
+
+[sources.synthetic]
+provider = "synthetic"
+enabled = true
+datasets = ["symbols", "bars_daily", "corporate_actions", "fx_rates", "trading_calendar", "macro_series", "fundamentals"]
+notes = "合成夹具（不联网、不依赖凭据）；synthetic 路径即使本文件缺失也可用。"
+
+[sources.tushare]
+provider = "tushare"
+enabled = true
+datasets = ["symbols", "bars_daily", "corporate_actions", "fund_adj"]
+credentials_env = "TUSHARE_TOKEN"
+calendar = "XSHG"
+
+[sources.tushare_index]
+provider = "tushare"
+enabled = true
+datasets = ["index_symbols", "index_daily"]
+credentials_env = "TUSHARE_TOKEN"
+
+[sources.tushare_hk]
+provider = "tushare"
+enabled = true
+datasets = ["hk_symbols"]
+credentials_env = "TUSHARE_TOKEN"
+calendar = "XHKG"
+
+[sources.tushare_macro]
+provider = "tushare"
+enabled = true
+datasets = ["macro_series"]
+credentials_env = "TUSHARE_TOKEN"
+
+[sources.futu]
+provider = "futu"
+enabled = false
+datasets = ["bars_daily"]
+credentials_env = ""
+calendar = "XHKG"
+currency = "HKD"
+notes = "normalize-only：抓取在 envs/futu（futu-api SDK，OpenD 常驻）。需先有原始 bronze 与 tushare_hk 名单。"
+
+[sources.us_etf]
+provider = ""
+enabled = false
+datasets = ["bars_daily", "corporate_actions"]
+credentials_env = ""
+calendar = "XNYS"
+
+[sources.fx]
+provider = ""
+enabled = false
+datasets = ["fx_rates"]
+credentials_env = ""
