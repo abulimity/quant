@@ -17,13 +17,21 @@ from __future__ import annotations
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 
+from quantlab.quality.clean import forward_adjust_close
 from quantlab.store.migrate import apply_migrations
 
 # 快照中包含的表（与 fixtures/synth.py 的 CONTENT_KEYS 一致）
 SNAPSHOT_TABLES: tuple[str, ...] = (
     "symbols", "bars_daily", "corporate_actions", "fx_rates",
     "trading_calendar", "macro_series", "fundamentals",
+)
+
+# 真实供应商的非契约 raw 表：只在 register_snapshot_views 里挂零拷贝视图，
+# **不进** load_snapshot（它们在 DuckDB 没有契约表，只以 Parquet 为真相）。
+RAW_TABLES: tuple[str, ...] = (
+    "fund_adj", "index_symbols", "index_daily", "hk_symbols",
 )
 
 
@@ -59,7 +67,7 @@ def register_snapshot_views(
     if not directory.is_dir():
         raise FileNotFoundError(f"快照不存在: {directory}")
     created = []
-    for table in SNAPSHOT_TABLES:
+    for table in (*SNAPSHOT_TABLES, *RAW_TABLES):
         path = directory / f"{table}.parquet"
         if not path.is_file():
             # 部分快照（真实供应商只产某几张表）合法：跳过缺失表，不把「没这张表」当错误。
@@ -138,6 +146,61 @@ def load_snapshot(
         after = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         counts[table] = int(after - before)
     return counts
+
+
+def materialize_close_adj(
+    con: duckdb.DuckDBPyConnection,
+    root: str | Path,
+    snapshot_id: str,
+    *,
+    migrate: bool = True,
+) -> dict:
+    """把单快照的后复权收盘物化进 `close_adj` 表（silver 层，P0c）。
+
+    数据来自**同一快照目录**的 `bars_daily`（+ `corporate_actions` / `fund_adj`，
+    有则用）。与 `load_snapshot` 一样是**追加**语义：同一 `snapshot_id` 重复装载
+    会被主键拒绝。`method` 取 `forward_adjust_close` 的口径（fund_adj_forward 或
+    split_forward），`available_utc` 继承自对应 bar —— 复权价不引入新的未来函数。
+    """
+    if migrate:
+        apply_migrations(con)
+
+    directory = Path(root) / snapshot_id
+    bars_path = directory / "bars_daily.parquet"
+    if not bars_path.is_file():
+        return {"close_adj": 0, "note": "bars_daily 缺失"}
+
+    bars = pd.read_parquet(bars_path)
+    if len(bars) == 0:
+        return {"close_adj": 0, "note": "bars_daily 为空"}
+
+    actions = (pd.read_parquet(directory / "corporate_actions.parquet")
+               if (directory / "corporate_actions.parquet").is_file() else None)
+    fund_adj = (pd.read_parquet(directory / "fund_adj.parquet")
+                if (directory / "fund_adj.parquet").is_file() else None)
+
+    df = forward_adjust_close(bars, actions, fund_adj)
+
+    avail = bars[["symbol_id", "ts", "available_utc", "source"]].copy()
+    df = df.merge(avail, on=["symbol_id", "ts"], how="left")
+    df["source"] = df["source"].fillna("synthetic")
+    df["snapshot_id"] = snapshot_id
+    df = df[["symbol_id", "ts", "close_adj", "adj_factor", "method",
+             "available_utc", "source", "snapshot_id"]]
+
+    before = int(con.execute("SELECT count(*) FROM close_adj").fetchone()[0])
+    con.register("_close_adj_stage", df)
+    try:
+        con.execute(
+            "INSERT INTO close_adj (symbol_id, ts, close_adj, adj_factor, method, "
+            "available_utc, source, snapshot_id) "
+            "SELECT symbol_id, ts, close_adj, adj_factor, method, available_utc, "
+            "source, snapshot_id FROM _close_adj_stage"
+        )
+    finally:
+        con.unregister("_close_adj_stage")
+    after = int(con.execute("SELECT count(*) FROM close_adj").fetchone()[0])
+    return {"close_adj": after - before, "method": str(df["method"].iloc[0]) if len(df) else "none"}
 
 
 def _contract_columns(con: duckdb.DuckDBPyConnection, table: str) -> list[str]:

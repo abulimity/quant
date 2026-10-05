@@ -57,6 +57,8 @@ _BENCHMARK_INDICES: tuple[str, ...] = (
     "399001.SZ",  # 深证成指
     "399006.SZ",  # 创业板指
     "399005.SZ",  # 中小100
+    "932000.CSI",  # 中证2000
+    "000922.CSI",  # 中证红利
 )
 
 
@@ -304,7 +306,7 @@ def _hk_symbols_to_contract(
     hk_symbols: pd.DataFrame, symbol_map: dict[str, int]
 ) -> pd.DataFrame:
     """tushare hk_basic（已 normalize 的 hk_symbols）→ 契约 symbols 表（XHKG）。"""
-    _util.require_columns(hk_symbols, ("ts_code", "curr_type"), "futu")
+    _util.require_columns(hk_symbols, ("ts_code", "curr_type", "name"), "futu")
     df = hk_symbols.copy()
     out = pd.DataFrame({
         "symbol_id": [symbol_map[str(c)] for c in df["ts_code"]],
@@ -317,6 +319,8 @@ def _hk_symbols_to_contract(
                      if "trade_unit" in df.columns else None),
         "listed_on": df["list_date"].tolist() if "list_date" in df.columns else None,
         "delisted_on": df["delist_date"].tolist() if "delist_date" in df.columns else None,
+        "name": df["name"].astype(str),
+        "invest_type": "其他",   # 港股名单未提供资产类别，统一「其他」（契约枚举内）
     })
     validate_normalized(out, "symbols")
     return out

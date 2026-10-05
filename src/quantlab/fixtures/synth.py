@@ -281,6 +281,7 @@ def _build_symbol_frames(sym: S.SymbolSpec, snapshot_id: str):
                 "low": float(min(round(float(low[i]), 6), float(close[i]))),
                 "close": float(close[i]),
                 "volume": float(volume[i]),
+                "amount": float(round(float(volume[i] * close[i]), 6)),  # 成交额 ≈ 量 × 收盘
                 "currency": sym.currency,
                 "close_utc": _naive_utc(close_ts[i]),
                 "available_utc": _naive_utc(close_ts[i] + buffer),
@@ -294,6 +295,9 @@ def _build_symbol_frames(sym: S.SymbolSpec, snapshot_id: str):
 
 
 def _build_symbols_frame() -> pd.DataFrame:
+    # name / invest_type 由 ticker **派生**（不放进 SymbolSpec）—— 否则会改变
+    # spec_fingerprint → 合成 snapshot_id 漂移（snapshot_id 只取决于 SymbolSpec）。
+    # 合成夹具不编码真实资产类别，invest_type 统一标「其他」（仍在契约枚举内）。
     return pd.DataFrame(
         [
             {
@@ -306,6 +310,8 @@ def _build_symbols_frame() -> pd.DataFrame:
                 "lot_size": s.lot_size,
                 "listed_on": s.listed_on,
                 "delisted_on": s.delisted_on,
+                "name": f"合成 {s.ticker}",
+                "invest_type": "其他",
             }
             for s in S.SYMBOLS
         ]
