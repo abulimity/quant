@@ -2473,3 +2473,24 @@ $env:PYTHONIOENCODING='utf-8'
 
 **不在本次范围**：`quantlab run` 切真实 tushare 数据、futu `rehab.parquet` → `corporate_actions`、
 us/fx 与 akshare/yfinance/fred 的真实实现、4 个 `tushare*` 合并成单 provider、全量回填重跑。
+
+---
+
+### 交付：提交 + 推送 + PR（2026-10-05）
+
+```powershell
+git checkout -b 主线-数据流统一-sources接线
+git add -A
+git commit -m "feat(ingest): 数据流统一——sources 配置接线 + tushare/futu 规范化
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>"
+# → [主线-数据流统一-sources接线 967ee43] 22 files changed, 953 insertions(+), 156 deletions(-)
+
+git push -u origin 主线-数据流统一-sources接线
+# → * [new branch] 主线-数据流统一-sources接线 -> 主线-数据流统一-sources接线
+
+gh pr create --base main --head 主线-数据流统一-sources接线 --title "feat(ingest): 数据流统一——sources 配置接线 + tushare/futu 规范化"
+# → https://github.com/abulimity/quant/pull/7
+```
+
+**结果**：commit `967ee43` 已推送 origin；PR #7 已开启，target `main`。
