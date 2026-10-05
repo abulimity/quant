@@ -497,7 +497,7 @@ E2E-B（论文 → spec 的 LLM 提取层，用户拍板「受控 DSL + fail-clo
 
 - **全链路六段**（P5.6 的 V2/V4）：论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 →
   bt 组合 → 报告，全程无人工改文件 —— **尚未串起来**（本次只到 paper→spec→weights 对拍）。
-- **横截面算子族 #14**（`rank`/`cross_sectional_rank`/`condition`）——真实研报属此域，单独立项。
+- **横截面算子族 #14**（`rank`/`cross_sectional_rank`/`condition`）——真实研报属此域，~~单独立项~~ **已落地**（2026-10-05，见 §7.12）。
 
 ---
 
