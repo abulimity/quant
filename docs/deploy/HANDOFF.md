@@ -8,7 +8,7 @@
 
 ## 1. 一句话状态
 
-**P5.6 全链路六段 + P6 组合与报告 已完成且验证：一条命令「夹具数据 + golden DSL → 三引擎（vbt 粗筛→backtrader 精验→bt 组合）→ reference 对账 → 组合 → 报告」跑通并落 `runs/<run_id>/`，可复现（V4 两次同输入指标一致）；P6 三缺块（portfolio/eval/registry + `quantlab run` CLI）补齐，458 测试全绿。剩余仅 #14 横截面算子族（单独立项，见 §7.2）。**
+**P5.6 全链路六段 + P6 组合与报告 已完成且验证：一条命令「夹具数据 + golden DSL → 三引擎（vbt 粗筛→backtrader 精验→bt 组合）→ reference 对账 → 组合 → 报告」跑通并落 `runs/<run_id>/`，可复现（V4 两次同输入指标一致）；P6 三缺块（portfolio/eval/registry + `quantlab run` CLI）补齐，458 测试全绿。**主线（P5.6/P6 + #14）已全部落地**：#14 横截面算子族由其他 agent 实现并合并进 main（PR #4/#5，见 §7.12）；§7.2 仅剩非阻塞待办（长路径管理员 / 数据供应商配置 / P7 等）。**
 **数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2026-09-30，272.4 万根 bar）并完成对账修复；剩余数据集（复权因子 `fund_adj`、基准指数 `index`、港股名单 `hk_basic`、宏观最小集）已接入并全部回填，时间范围扩展到最新交易日 2026-09-30（最新快照 `tushare-f4f7c81a15b5779c`）；数据并入主项目 `D:\project\quant\data`。**
 （更新时间：2026-10-05；P5 全过程见 §7.7，口径重估见 §7.6，tushare 回填见 §7.8，剩余数据集见 §7.9，能力域内 E2E 落地见 §7.10，全链路六段 + P6 落地见 §7.12）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
@@ -166,7 +166,7 @@
 > **本会话已交付**：全链路六段（论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 →
 > bt 组合 → reference 对账 → 组合 → 报告）串成一条命令 `run_full_chain` / `quantlab run`，
 > 落 `runs/<run_id>/`，可复现（V4）。P6 三缺块补齐（`portfolio`/`eval`/`registry` + `run` CLI）。
-> 458 测试全绿。剩余仅 **#14 横截面算子族**（单独立项，见 §7.2 #14）。
+> 458 测试全绿。**主线（P5.6/P6 + #14）已全部落地**：**#14 横截面算子族**已由其他 agent 实现并合并（PR #4/#5）；§7.2 仅剩非阻塞待办。
 
 > **可复用清单（下个任务直接接）**：`engines.base.load_bundle_from_fixture()`（夹具→回测输入）、
 > `engines.base.get_runner()`（按名取引擎）、`engines.execution`（撮合语义真值）、
@@ -197,7 +197,7 @@
 | 5 | `envs/vbt` 的 `plotly<7` 上界（现 6.9.0） | 已人工裁决 | 待 vectorbt 上游适配 plotly 7 |
 | 6 | `litellm` 无 `__version__` | — | P5 起改 `importlib.metadata.version("litellm")` |
 | 7 | 手工跑 uv 前须清 `UV_PROJECT_ENVIRONMENT`/`VIRTUAL_ENV` | 会把环境建到错误位置 | 例行注意（`bridge.py` 已自动清洗） |
-| 14 | **横截面算子族**（`rank`/`cross_sectional_rank`/`condition`）未进契约 | P5.6 实测：真实 paper2spec 的横截面动量规格**映射不出 entry**（横截面排名目前只在 `emit_weights` 里**隐式**实现）。经人工裁定（2026-10-02）：**另立任务**，不在 P5.6 内顺带做 | 单独立项（涉及 `Expr`/lint 因果性/emit 求值/跨引擎） |
+| 14 | **横截面算子族**（`rank`/`cross_sectional_rank`/`condition`）未进契约 | P5.6 实测：真实 paper2spec 的横截面动量规格**映射不出 entry**（横截面排名目前只在 `emit_weights` 里**隐式**实现）。经人工裁定（2026-10-02）：**另立任务**，不在 P5.6 内顺带做 | ✅ 已由其他 agent 实现并合并（PR #4/#5：`4b1fd12` feat + `e5bdf8d` docs；测试 `test_p14_cross_sectional.py`） |
 | 15 | **x2strategy `max_tokens` 补丁在 `.venv` 内** | 重建环境（`uv sync`/重装）即丢 → Extract Layer-2 会再次崩溃 | 重建后按 `envs/x2/X2STRATEGY_PATCH.md` 复现 |
 | 16 | **`strategy.py` 静态审阅出 H1–H6 语义偏差**（HRP 退化等权、风险袖套不缩放、横截面 rank 未用、跳空延迟全局生效…） | 若要真跑此代码，须先修，否则结果无解释力 | 待定，见 §7.7 与 `envs/x2/X2_PAPER2CODE_REVIEW.md` |
 | 17 | `config/llm.toml` 模型名与中转实际提供的不符 | 已改 `claude-sonnet-4-5` → `deepseek-v4-pro` | ✅ 本会话已修 |
@@ -497,7 +497,7 @@ E2E-B（论文 → spec 的 LLM 提取层，用户拍板「受控 DSL + fail-clo
 
 - **全链路六段**（P5.6 的 V2/V4）：论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 →
   bt 组合 → 报告，全程无人工改文件 —— **尚未串起来**（本次只到 paper→spec→weights 对拍）。
-- **横截面算子族 #14**（`rank`/`cross_sectional_rank`/`condition`）——真实研报属此域，单独立项。
+- ~~**横截面算子族 #14**（`rank`/`cross_sectional_rank`/`condition`）——真实研报属此域，单独立项。~~ → ✅ 已由其他 agent 实现并合并（PR #4/#5）。
 
 ---
 
@@ -563,7 +563,7 @@ bt 无法表达逐标的停牌顺延（`halt_deferral_unsupported`，E2E-A 早�
 
 ### 剩余（非阻塞）
 
-- #14 横截面算子族（单独立项，见 §7.2 #14）。
+- ✅ #14 横截面算子族已由其他 agent 实现并合并（PR #4/#5，测试 `test_p14_cross_sectional.py`）。
 - 报告 PNG/tearsheet 缺 CJK 字体（DejaVu Sans 无中文），图内中文标签显示方框；`report.md` 不受影响。
 
 ---
