@@ -26,7 +26,7 @@ import duckdb
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 # schema.sql 的版本标签；改动 DDL 时应同步更新，作为漂移检测的人类可读标识。
-SCHEMA_VERSION = "0001_initial"
+SCHEMA_VERSION = "0002_runs"
 
 MIGRATIONS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (

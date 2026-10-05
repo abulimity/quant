@@ -2306,6 +2306,70 @@ PYTHONIOENCODING=utf-8 uv run --project envs/futu python envs/futu/fetch_history
 
 ---
 
+## P5.6 全链路六段 + P6 组合与报告（本会话，2026-10-05）
+
+> 目标：一条命令「夹具数据 + golden DSL → 三引擎 → 组合 → 报告」落 `runs/<run_id>/`，可复现（V4），
+> 并补足 P6 缺失模块（组合/指标/年化/run 登记/报告生成）。vectorbt 粗筛用**真实桥**（`run_in_env`）。
+
+### 新增模块（工作树改，commit 回分支）
+
+| 模块 | 内容 |
+| --- | --- |
+| `src/quantlab/eval/metrics.py` | `derive_periods_per_year`（日历推导，不写死 365/252）、`max_drawdown`（带符号）、`total_return`、`annualized_return`、`annualized_volatility`、`sharpe_ratio`、`turnover`、`rebalance_count`、`performance_metrics` |
+| `src/quantlab/eval/report.py` | `write_run_outputs`：真相 Parquet + CSV 副本 + `metrics.json`（含年化口径）+ spec/params/run_meta.json + equity.png + report.md + tearsheet.html（自包含） |
+| `src/quantlab/portfolio/compose.py` | `compose`（多策略净值组合：再平衡重置/其余漂移，杠杆拒绝）、`attribute_returns`（本币/汇率/交互） |
+| `src/quantlab/registry/runs.py` | `register_run`（缺字段 fail-closed）、`register_metrics`（只收有限数值，拒 NaN/bool）、`get_run`/`get_metrics` |
+| `src/quantlab/pipeline.py` | `run_full_chain`：spec 解析 → lint 闸门 → vectorbt 粗筛 → backtrader 精验 → bt 组合 → reference 对账 → 组合/报告/登记 |
+| `src/quantlab/cli.py` | 新增 `quantlab run` 子命令 |
+| `src/quantlab/store/schema.sql` + `migrate.py` | 追加 `runs` / `run_metrics` 两表（P6.3），版本 +1 幂等迁移 |
+
+### 验证命令与输出（主检出环境 + 数据，PYTHONPATH 指工作树 src）
+
+```powershell
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:QUANT_ROOT='D:\project\quant'
+$env:PYTHONIOENCODING='utf-8'
+$env:PYTHONPATH='C:\Users\abulimity\orca\workspaces\quant\主线-P5.6全链路打通\src'
+uv run --project D:\project\quant python -m unittest tests.test_p5_full_chain_e2e -v
+```
+
+实际输出（E2E）：`Ran 7 tests ... OK`（26.739s）。7 项全过：spec/gate、vbt 真实桥
+（`coarse_screen_only`，numba JIT，anchor 20/60）、三引擎对拍、全产出落盘
+（11 文件 + `vbt/result.parquet`）、无人工复核、V4 两次同输入指标一致（places=9）、registry 可读。
+
+全量回归：
+
+```powershell
+uv run --project D:\project\quant python -m unittest discover -t . -s tests
+```
+
+实际输出：`Ran 458 tests ... OK`（188.611s）——含既有 P2–P5，全绿。
+
+### 关键口径：三引擎对拍（bt 停牌顺延偏差）
+
+E2E 初版把 `bt↔reference@close ≤ 1e-4` 写成硬断言，实测 `bt_vs_reference_close = 0.0629`（6.29%）**红**。
+定位：`load_bundle_from_fixture()` 产出**联合日历索引**（XSHG∪XHKG∪XNYS），`subset([1])` 后标的 1 仍带
+交易所休市日（traded=False，≈167 天）；bt 在再平衡日**收盘撮合**且**无法表达逐标的停牌顺延**，就地按 ffill
+旧价成交，而 reference@close 正确顺延 → 已知偏差（`halt_deferral_unsupported`；E2E-A 早已只对拍
+backtrader↔reference，未对拍 bt）。
+
+**修正后的契约（已落测试）**：`backtrader↔reference@open ≤ 1e-4` 硬对拍（两引擎都正确顺延停牌）；
+bt 偏差只在 `halt_sessions==0` 时才要求 ≤1e-4，否则断言 `halt_sessions>0` 且
+`run_meta["known_deviation"]` 显式记录 `halt_deferral_unsupported`（**非静默吞掉**）。
+这不是放宽容差——bt 撮合本身正确（无停牌样本吻合到 8.9e-16，见 parity_report §4.5.2），
+此处钉的是「已知偏差必须显式留痕」。
+
+> 附：`≤1e-4` 的硬对拍在 **0bps 成本情景**下成立（本 E2E 与 E2E-A 均用 `F8_SCENARIOS[0]`）。
+> 非零成本下两 runner 成本建模有细微差异：CLI 默认 10bps 实测 `backtrader↔reference@open ≈ 1e-3`
+> （仍远小于 bt 的停牌缺口）。故对拍硬断言只在 0bps 情景，非零成本属已知引擎特征、不在硬对拍范围。
+
+### 备注（非阻塞）
+
+- `report.py` 生成 PNG/tearsheet 时 matplotlib 缺 CJK 字体（DejaVu Sans）→ 图内中文标签显示方框；
+  `report.md` 文本不受影响。如需中文渲染，后续为 matplotlib 配中文字体（如 SimHei/微软雅黑）。
+
+---
+
 ## P14 · 横截面算子族（rank / cross_sectional_rank / condition）（2026-10-05）
 
 **目的**：把横截面排名从 `emit_weights` 硬编码的 63 日动量，升级为一等 `Expr` 算子

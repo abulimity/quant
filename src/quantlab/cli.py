@@ -15,6 +15,7 @@ import argparse
 import json
 import sys
 from datetime import date
+from pathlib import Path
 
 from quantlab.ingest.orchestrator import IngestError, ingest
 from quantlab.store.db import connect, warehouse_path
@@ -66,6 +67,60 @@ def _cmd_schema(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_int_list(raw: str | None) -> list[int] | None:
+    if not raw:
+        return None
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        return None
+    try:
+        return [int(p) for p in parts]
+    except ValueError as exc:
+        raise SystemExit(f"2\n--universe/--symbols 必须是逗号分隔的整数：{raw!r}（{exc}）")
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    from quantlab.contract.types import F8_SCENARIOS
+    from quantlab.pipeline import run_full_chain
+
+    costs = None
+    if args.costs is not None:
+        if args.costs not in F8_SCENARIOS:
+            print(f"未知成本情景 {args.costs}，可选 {sorted(F8_SCENARIOS)}", file=sys.stderr)
+            return 2
+        costs = F8_SCENARIOS[args.costs]
+
+    dsl_payload = None
+    if args.dsl:
+        dsl_payload = json.loads(Path(args.dsl).read_text(encoding="utf-8-sig"))
+    spec_arg = Path(args.spec) if args.spec else None
+
+    universe = tuple(_parse_int_list(args.universe) or [])
+    symbols = _parse_int_list(args.symbols)
+
+    try:
+        result = run_full_chain(
+            spec=spec_arg, paper=args.paper, dsl=dsl_payload,
+            universe=universe, symbols=symbols, costs=costs,
+            out_dir=args.out, run_vbt=not args.no_vbt,
+            initial_cash=args.initial_cash,
+            warehouse=args.warehouse, register=args.register, run_id=args.run_id,
+        )
+    except Exception as exc:  # noqa: BLE001 —— CLI 边界：报错 + 非零退出，不静默
+        print(f"run 失败：{exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps({
+        "run_id": result.run_id,
+        "spec_id": result.spec_id,
+        "out_dir": str(result.out_dir),
+        "metrics": {k: v for k, v in result.metrics.items() if k != "annualization_note"},
+        "parity": result.parity,
+        "needs_human_review": result.needs_human_review,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="quantlab", description="本地量化研究平台")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -89,6 +144,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_schema = sub.add_parser("schema", help="契约 schema 信息")
     p_schema.add_argument("--print", action="store_true", help="打印 schema.sql 全文")
     p_schema.set_defaults(func=_cmd_schema)
+
+    p_run = sub.add_parser("run", help="全链路六段：规格/论文 → 三引擎 → 组合 → 报告")
+    src = p_run.add_mutually_exclusive_group(required=True)
+    src.add_argument("--paper", default=None, help="论文路径（LLM 解析，非确定）")
+    src.add_argument("--dsl", default=None, help="受控 DSL JSON 文件（确定）")
+    src.add_argument("--spec", default=None, help="手写 StrategySpec JSON 文件（确定）")
+    p_run.add_argument("--universe", default=None, help="逗号分隔的内部 symbol_id（覆盖 spec.universe）")
+    p_run.add_argument("--symbols", default=None, help="逗号分隔的 symbol_id（回测子集，缺省=universe）")
+    p_run.add_argument("--costs", type=int, choices=(0, 10, 30), default=None,
+                       help="成本情景（单边 bps；缺省用 spec 自带成本）")
+    p_run.add_argument("--initial-cash", type=float, default=1_000_000.0, help="初始资金")
+    p_run.add_argument("--out", default=None, help="产出目录（缺省 runs/<run_id>/）")
+    p_run.add_argument("--run-id", default=None, help="显式 run_id（缺省自动生成）")
+    p_run.add_argument("--no-vbt", action="store_true", help="跳过 vectorbt 粗筛")
+    p_run.add_argument("--register", action="store_true", help="把 run 登记进 DuckDB")
+    p_run.add_argument("--warehouse", default=None, help="DuckDB 台账路径（--register 时用）")
+    p_run.set_defaults(func=_cmd_run)
 
     return parser
 
