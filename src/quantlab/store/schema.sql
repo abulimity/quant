@@ -142,6 +142,32 @@ CREATE TABLE IF NOT EXISTS ingest_runs (
 );
 
 -- ---------------------------------------------------------------------------
+-- 回测 run 登记（P6.3）：把「一次回测」及其复现三件套固化下来。
+-- **不是事实表**（无 snapshot_id）：run 是**产出**，不是可叠加的行情快照。
+-- 研究侧只读可查；写入只在 ingest/单进程（DuckDB 单写多读）。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS runs (
+    run_id           TEXT PRIMARY KEY,       -- 本次回测唯一 ID
+    spec_id          TEXT NOT NULL,          -- StrategySpec 内容哈希（spec_id）
+    engine           TEXT NOT NULL,          -- reference / bt / backtrader / portfolio
+    origin           TEXT NOT NULL,          -- handwritten / x2strategy
+    created_at       TIMESTAMP NOT NULL,     -- naive UTC
+    data_snapshot_id TEXT NOT NULL,          -- 复现三件套之一：数据快照
+    env_lock_hash    TEXT NOT NULL,          -- 复现三件套之二：环境锁
+    git_sha          TEXT NOT NULL,          -- 复现三件套之三：代码版本
+    params_json      TEXT NOT NULL,          -- 成本 / 初始资金 / 动量窗口等
+    status           TEXT NOT NULL,
+    CHECK (status IN ('ok', 'failed', 'partial'))
+);
+
+CREATE TABLE IF NOT EXISTS run_metrics (
+    run_id TEXT   NOT NULL REFERENCES runs(run_id),
+    metric TEXT   NOT NULL,                  -- total_return / annualized_return / ...
+    value  DOUBLE NOT NULL,
+    PRIMARY KEY (run_id, metric)
+);
+
+-- ---------------------------------------------------------------------------
 -- 快照读取约定（P2.1 强制）
 -- ---------------------------------------------------------------------------
 -- 因主键含 snapshot_id，同一 (symbol_id, ts) 会**同时**存在于多个快照中。

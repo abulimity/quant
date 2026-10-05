@@ -2,15 +2,15 @@
 
 > **一次性进度快照**，用于新会话接续执行。
 > 与 `CLAUDE.md` 的分工：`CLAUDE.md` 是**长期约定**（每个会话都适用），本文件是**当前进度**（完成后即失效）。
-> 更新时间：2026-10-04
+> 更新时间：2026-10-05
 
 ---
 
 ## 1. 一句话状态
 
-**P5 进行中：P5.1–P5.5 已完成且验证；「规格为真相 A」口径已确认落定，能力域内 E2E 两段均已落地——E2E-A（手写规格契约链，6/6 通过）与 E2E-B（受控 DSL + fail-closed parser，三 V3 全过、真跑权重 exact parity）。剩余：全链路六段（vectorbt→backtrader→bt→报告）与横截面算子族 #14 未做（见 §7.10）。**
+**P5.6 全链路六段 + P6 组合与报告 已完成且验证：一条命令「夹具数据 + golden DSL → 三引擎（vbt 粗筛→backtrader 精验→bt 组合）→ reference 对账 → 组合 → 报告」跑通并落 `runs/<run_id>/`，可复现（V4 两次同输入指标一致）；P6 三缺块（portfolio/eval/registry + `quantlab run` CLI）补齐，458 测试全绿。剩余仅 #14 横截面算子族（单独立项，见 §7.2）。**
 **数据层（旁路）：tushare 境内 ETF 已全量回填（2861 只 × 2015–2026-09-30，272.4 万根 bar）并完成对账修复；剩余数据集（复权因子 `fund_adj`、基准指数 `index`、港股名单 `hk_basic`、宏观最小集）已接入并全部回填，时间范围扩展到最新交易日 2026-09-30（最新快照 `tushare-f4f7c81a15b5779c`）；数据并入主项目 `D:\project\quant\data`。**
-（更新时间：2026-10-04；P5 全过程见 §7.7，口径重估见 §7.6，tushare 回填见 §7.8，剩余数据集见 §7.9，能力域内 E2E 落地见 §7.10）
+（更新时间：2026-10-05；P5 全过程见 §7.7，口径重估见 §7.6，tushare 回填见 §7.8，剩余数据集见 §7.9，能力域内 E2E 落地见 §7.10，全链路六段 + P6 落地见 §7.12）
 （历史：P0 ✅ 含 1 项豁免、P1 ✅ 无豁免、P2 ✅ 无豁免、P3 ✅ 无豁免、P4 ✅ 无豁免）
 
 > ✅ **已解除**：`bt` 多标的换仓的 **3.6% 偏差** = **停牌顺延缺口**（bt 无「交易日掩码」，
@@ -161,16 +161,16 @@
 
 ---
 
-## 6. 下一步：剩余 P5.6 全链路 + P6（组合与报告）
+## 6. 下一步：剩余 P5.6 全链路 + P6（组合与报告）—— ✅ 已完成（2026-10-05，见 §7.12）
 
-> **P5 主体已交付**：P5.1–P5.5 与能力域内 E2E-A/E2E-B 均已落地（见 §7.10）。
-> 剩余两项：
-> ① **全链路六段**（P5.6 的 V2/V4）——论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 → bt 组合 → 报告，全程无人工改文件，尚未串起来；
-> ② **P6 组合与报告**——年化口径按所用日历推导并全局统一（不写死 365/252）。
+> **本会话已交付**：全链路六段（论文 → spec → lint → vectorbt 粗筛 → backtrader 精验 →
+> bt 组合 → reference 对账 → 组合 → 报告）串成一条命令 `run_full_chain` / `quantlab run`，
+> 落 `runs/<run_id>/`，可复现（V4）。P6 三缺块补齐（`portfolio`/`eval`/`registry` + `run` CLI）。
+> 458 测试全绿。剩余仅 **#14 横截面算子族**（单独立项，见 §7.2 #14）。
 
-> **P4 已交付可直接复用**：`engines.base.load_bundle_from_fixture()`（夹具→回测输入）、
+> **可复用清单（下个任务直接接）**：`engines.base.load_bundle_from_fixture()`（夹具→回测输入）、
 > `engines.base.get_runner()`（按名取引擎）、`engines.execution`（撮合语义真值）、
-> `docs/deploy/parity_report.md`（三引擎口径差异台账）。
+> `pipeline.run_full_chain`（六段编排）、`docs/deploy/parity_report.md`（三引擎口径差异台账）。
 
 ---
 
@@ -529,6 +529,42 @@ E2E-B（论文 → spec 的 LLM 提取层，用户拍板「受控 DSL + fail-clo
 - **仅 bronze 原始快照**，尚未 normalize 到 `bars_daily` 契约（`symbol_map`/currency 未配，P2.4 适配器留后续）。
 - **两道 futu 限额**：① 历史 K 线 / 复权因子各「每 30 秒 60 次」→ `--delay 1.2s`；② 正股 K 线「每 7 天 100 只」→ 分批。
 - 首份快照 `20261004_115547_925918` 已存在，续抓命令见附录 A.1。
+
+---
+
+## 7.12 本会话：P5.6 全链路六段 + P6 组合与报告 落地（2026-10-05）
+
+**目标**：把 §7.10 剩下的「全链路六段 + P6 组合与报告」落地——一条命令跑通、可复现（V4），
+补足 `src/quantlab/{portfolio,eval,registry}` 三个缺失模块 + `pipeline.py` 编排 + `quantlab run` CLI。
+
+### 交付
+
+- **编排胶水** `src/quantlab/pipeline.py::run_full_chain`：spec 解析（paper/dsl/spec）→ lint 闸门
+  （`raise_if_failed`，因 `spec2weights` 不跑 lint）→ vectorbt 粗筛（**真实桥** `run_in_env`，产出带
+  `coarse_screen_only` 标注）→ backtrader 精验 → bt 组合 → reference 对账 → 组合/报告/登记。
+- **P6 补缺**：`eval/metrics.py`（年化口径 `derive_periods_per_year` 日历推导，不写死 365/252）、
+  `eval/report.py`（`write_run_outputs` 全产出落盘）、`portfolio/compose.py`（多策略组合 + 收益归因）、
+  `registry/runs.py`（run 登记 fail-closed）+ `store/schema.sql`/`migrate.py` 追加 `runs`/`run_metrics`。
+- **CLI** `quantlab run` 子命令。
+
+### 验证（全部通过，证据见 EVIDENCE.md §P5.6）
+
+- `tests/test_p6_{metrics,portfolio,registry,report}.py` 全过；
+- `tests/test_p5_full_chain_e2e.py` **7/7**（V2 六段 + V4 确定性 + registry 可读）；
+- 全量回归 **458 tests OK**（含既有 P2–P5）。
+
+### 口径钉正：三引擎对拍
+
+初版把 `bt↔reference@close ≤ 1e-4` 当硬断言，实测 6.29% 偏差。根因：联合日历索引下标的 1 带休市日，
+bt 无法表达逐标的停牌顺延（`halt_deferral_unsupported`，E2E-A 早已只对拍 backtrader↔reference）。
+**修正契约**：`backtrader↔reference@open ≤ 1e-4` 硬对拍；bt 偏差在 `halt_sessions==0` 时才要求 ≤1e-4，
+否则断言 `halt_sessions>0` 且 `known_deviation` 显式记录（非静默）。bt 撮合本身正确（无停牌吻合 8.9e-16）。
+（`≤1e-4` 只在 0bps 成本情景成立；非零成本下 `backtrader↔reference@open ≈1e-3`，属已知引擎特征。）
+
+### 剩余（非阻塞）
+
+- #14 横截面算子族（单独立项，见 §7.2 #14）。
+- 报告 PNG/tearsheet 缺 CJK 字体（DejaVu Sans 无中文），图内中文标签显示方框；`report.md` 不受影响。
 
 ---
 

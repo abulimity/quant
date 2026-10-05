@@ -7,7 +7,10 @@
     ingest/     接入层：Source 协议、适配器骨架、编排与快照
     engines/    引擎适配层：跨环境桥（core 侧）
     contract/   契约层（P3）
-    portfolio/  组合与报告（P6）
+    portfolio/  组合与归因（P6.1）
+    eval/       指标 / 年化口径 / 报告（P6.2）
+    registry/   run registry（P6.3）
+    pipeline/   （模块）全链路六段编排（P5.6 V2/V4）
 
 约定：本包只装进 core 环境；`envs/vbt` 与 `envs/x2` **不得** import 本包，
 一切交换走 `quantlab.engines.bridge` 的 job.json + Parquet + subprocess。
