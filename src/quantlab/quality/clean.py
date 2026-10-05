@@ -116,6 +116,68 @@ def adjust_prices(
     return out
 
 
+def forward_adjust_close(
+    bars: pd.DataFrame,
+    actions: pd.DataFrame | None = None,
+    fund_adj: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """后复权收盘（silver 层 `close_adj` 的纯函数），D0 = 该标的最早交易日，最初价不变。
+
+    两种口径（`method` 列记录，可溯源）：
+        · `fund_adj_forward`：`fund_adj` 存在（真实 tushare）时，用供应商**累计复权因子**
+          （含分红）归一：`close_adj[t] = close[t] × (adj_factor[t] / adj_factor[t0])`，
+          `t0` = 该标的最早 ts。这是「总收益口径」的后复权（含分红），非纯拆分。
+        · `split_forward`：无 `fund_adj` 时退化为 `adjust_prices(method=forward)` 的
+          **纯拆分**后复权（分红不进价格 —— 分红进的是 `total_return_index`）。
+    """
+    if fund_adj is not None and len(fund_adj):
+        return _fund_adj_forward(bars, fund_adj)
+
+    parts: list[pd.DataFrame] = []
+    for symbol_id, sub in bars.groupby("symbol_id", sort=True):
+        own = (actions[actions["symbol_id"] == symbol_id]
+               if actions is not None and len(actions) else None)
+        adj = adjust_prices(sub, own, method=ADJUST_FORWARD)
+        parts.append(pd.DataFrame({
+            "symbol_id": [symbol_id] * len(adj),
+            "ts": adj["ts"].to_list(),
+            "close_adj": adj["close_adj"].to_numpy(dtype="float64"),
+            "adj_factor": adj["adjust_multiplier"].to_numpy(dtype="float64"),
+        }))
+    if not parts:
+        return pd.DataFrame(columns=["symbol_id", "ts", "close_adj", "adj_factor", "method"])
+    out = pd.concat(parts, ignore_index=True)
+    out["method"] = "split_forward"
+    return out.sort_values(["symbol_id", "ts"]).reset_index(drop=True)
+
+
+def _fund_adj_forward(bars: pd.DataFrame, fund_adj: pd.DataFrame) -> pd.DataFrame:
+    """用供应商累计复权因子做后复权（含分红，总收益口径），缺因子回退 1（不调整）。"""
+    fa = fund_adj[["symbol_id", "ts", "adj_factor"]].copy()
+    fa["adj_factor"] = pd.to_numeric(fa["adj_factor"], errors="coerce").astype("float64")
+    merged = bars[["symbol_id", "ts", "close"]].merge(
+        fa, on=["symbol_id", "ts"], how="left")
+    merged["adj_factor"] = merged["adj_factor"].fillna(1.0)
+
+    rows: list[pd.DataFrame] = []
+    for symbol_id, sub in merged.sort_values(["symbol_id", "ts"]).groupby(
+            "symbol_id", sort=True):
+        anchor = float(sub["adj_factor"].iloc[0])
+        norm = (np.ones(len(sub), dtype="float64") if anchor == 0.0
+                else sub["adj_factor"].to_numpy(dtype="float64") / anchor)
+        rows.append(pd.DataFrame({
+            "symbol_id": [symbol_id] * len(sub),
+            "ts": sub["ts"].to_list(),
+            "close_adj": sub["close"].to_numpy(dtype="float64") * norm,
+            "adj_factor": norm,
+        }))
+    if not rows:
+        return pd.DataFrame(columns=["symbol_id", "ts", "close_adj", "adj_factor", "method"])
+    out = pd.concat(rows, ignore_index=True)
+    out["method"] = "fund_adj_forward"
+    return out.sort_values(["symbol_id", "ts"]).reset_index(drop=True)
+
+
 def total_return_index(
     bars: pd.DataFrame,
     actions: pd.DataFrame,

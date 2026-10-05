@@ -25,7 +25,7 @@ DATASET = "bars_daily"
 # AKShare 中文列名 → 契约列名
 _COLUMN_MAP = {
     "日期": "ts", "开盘": "open", "最高": "high",
-    "最低": "low", "收盘": "close", "成交量": "volume",
+    "最低": "low", "收盘": "close", "成交量": "volume", "成交额": "amount",
 }
 _REQUIRED_RAW = tuple(_COLUMN_MAP)
 
@@ -76,6 +76,7 @@ class AkshareSource:
             "low": pd.to_numeric(raw["最低"]).astype("float64"),
             "close": pd.to_numeric(raw["收盘"]).astype("float64"),
             "volume": pd.to_numeric(raw["成交量"]).astype("float64"),
+            "amount": pd.to_numeric(raw["成交额"]).astype("float64"),  # 原单位，未换算
         })
         out["currency"] = self.currency
         out["close_utc"] = _util.to_naive_utc(
