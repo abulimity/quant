@@ -2520,6 +2520,8 @@ gh pr create --base main --head 主线-数据流统一-sources接线 --title "fe
 
 **真实 ingest（单写，主检出环境）**：
 
+首次尝试（token 未就绪，如实记录）：
+
 ```powershell
 # 主检出环境；先清注入的 UV_PROJECT_ENVIRONMENT/VIRTUAL_ENV，QUANT_ROOT 指向主检出，
 # PYTHONPATH 指向工作树 src（override 主检出 .venv 里的 quant.pth，使代码改动生效）
@@ -2530,9 +2532,33 @@ $env:PYTHONPATH = '<工作树>\src'
 #     tushare: 未提供 TUSHARE_TOKEN（环境变量 TUSHARE_TOKEN 或构造参数）。凭据一律走环境变量，不得写入仓库。
 ```
 
-**结果：待人工补跑。** 环境未提供 `TUSHARE_TOKEN`（`sources.toml` 的 `credentials_env=TUSHARE_TOKEN`，
-值只走环境变量）。按约定**只提交代码改动、不伪造数据**；待人工在设好 `TUSHARE_TOKEN` 的环境里
-重跑 `quantlab ingest --source tushare_index`（单写串行），把 index_daily 落进 bronze 后可关闭 0b 验收。
+补跑（TUSHARE_TOKEN 就绪后；token 从 User 环境变量注入，**不落盘、不回显**）：
+
+```powershell
+$env:TUSHARE_TOKEN = [System.Environment]::GetEnvironmentVariable('TUSHARE_TOKEN','User')
+Remove-Item Env:UV_PROJECT_ENVIRONMENT,Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:QUANT_ROOT = 'D:\project\quant'
+$env:PYTHONPATH = '<工作树>\src'
+& 'D:\project\quant\.venv\Scripts\python.exe' -m quantlab.cli ingest --source tushare_index
+# → {"snapshot_id":"tushare_index-b170e23a8bad9cb7","status":"ok",
+#    "path":"D:\\project\\quant\\data\\bronze\\tushare\\tushare_index-b170e23a8bad9cb7",
+#    "row_counts":{"index_symbols":8000,"index_daily":27954}, ..., "already_present":false}
+```
+
+**验证（报告所需 4 指数均落盘，10 年窗口各 2431 行）**：
+
+```
+distinct ts_code in index_daily: 12
+required present: {'000001.SH': True, '399006.SZ': True, '932000.CSI': True, '000922.CSI': True}
+  000001.SH: min=2015-01-05 max=2024-12-31 rows=2431
+  399006.SZ: min=2015-01-05 max=2024-12-31 rows=2431
+  932000.CSI: min=2015-01-05 max=2024-12-31 rows=2431
+  000922.CSI: min=2015-01-05 max=2024-12-31 rows=2431
+```
+
+台账（`data/warehouse.duckdb`，read_only）已登记：`index_symbols` 8000 / `index_daily` 27954，status=ok。
+
+**结果：0b 关闭。** snapshot `tushare_index-b170e23a8bad9cb7` 已落主检出 bronze，4 个报告所需指数齐全。
 
 ### 0c — close_adj 复权层 + store 暴露
 
@@ -2563,3 +2589,6 @@ git commit -m "feat(store): 阶段0数据契约——symbols/invest_type、bars_
 ```
 
 **结果**：commit `299761f` 已提交回分支 `主线-数据流统一-sources接线-2`；**未 push**（收口统一做）。
+
+**0b 补跑**：TUSHARE_TOKEN 就绪后补跑成功，snapshot `tushare_index-b170e23a8bad9cb7` 已落主检出 bronze，
+4 个报告所需指数齐全（见 0b 节验证）；补跑与留证随本 docs 提交一并落库，仍**未 push**。
